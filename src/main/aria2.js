@@ -88,6 +88,13 @@ async function addUri(config, file) {
     // Without the login cookie quark's download server answers 412.
     if (lower === 'cookie') options.header = [`Cookie: ${value}`];
   }
+  // aria2 opens one connection per server by default, and quark throttles each
+  // connection: measured 0.10 MiB/s with 1, 8.6 MiB/s with 16. Not for baidu,
+  // which polices multi-connection downloads.
+  if (new URL(file.url).hostname.endsWith('.quark.cn')) {
+    options.split = '16';
+    options['max-connection-per-server'] = '16';
+  }
   if (!options.referer) options.referer = new URL(file.url).origin + '/';
 
   return /** @type {string} */ (await call(config, 'aria2.addUri', [[file.url], options]));
