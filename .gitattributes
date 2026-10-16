@@ -1,0 +1,5 @@
+# Keep the repository's line endings stable regardless of who checks it out.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
