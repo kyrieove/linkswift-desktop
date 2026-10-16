@@ -65,6 +65,10 @@ const QUARK_STEPS = [
   },
   { do: 'sleep', ms: 500 },
   { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
+  // The script then fetches the link and shows a dialog; its push button is what
+  // sends aria2.addUri, which the app intercepts.
+  { do: 'wait-for', selector: 'button[action="sendto"][type="aria2"]', timeoutMs: 60000 },
+  { do: 'click', selector: 'button[action="sendto"][type="aria2"]' },
 ];
 
 /** @type {Step[]} */
@@ -94,6 +98,10 @@ const BAIDU_STEPS = [
   },
   { do: 'sleep', ms: 500 },
   { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
+  // The script then fetches the link and shows a dialog; its push button is what
+  // sends aria2.addUri, which the app intercepts.
+  { do: 'wait-for', selector: 'button[action="sendto"][type="aria2"]', timeoutMs: 60000 },
+  { do: 'click', selector: 'button[action="sendto"][type="aria2"]' },
 ];
 
 /** @type {Record<string, Provider>} */

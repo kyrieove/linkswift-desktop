@@ -116,11 +116,24 @@ function installLinkSwiftShim(boot) {
 
     const handle = { abort: abort, getAllResponseHeaders: getAllResponseHeaders };
 
+    function parseResponse(text, type) {
+      if (text === null || text === undefined) return '';
+      if (type !== 'json') return text;
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        return text;
+      }
+    }
+
     function settle(data) {
       if (data.headers) lastHeaders.set(id, data.headers);
       const response = {
         responseText: data.text === null || data.text === undefined ? '' : data.text,
-        response: data.text === null || data.text === undefined ? '' : data.text,
+        // A real GM_xmlhttpRequest hands back a parsed object for responseType
+        // 'json'. The script's own decode path mangles any body with non-ASCII
+        // text (escape() then JSON.parse) and ends up with a string.
+        response: parseResponse(data.text, option.responseType),
         status: data.status === null || data.status === undefined ? 0 : data.status,
         statusText: data.statusText || '',
         readyState: 4,

@@ -85,6 +85,8 @@ async function addUri(config, file) {
     const lower = name.toLowerCase();
     if (lower === 'user-agent') options['user-agent'] = value;
     if (lower === 'referer') options.referer = value;
+    // Without the login cookie quark's download server answers 412.
+    if (lower === 'cookie') options.header = [`Cookie: ${value}`];
   }
   if (!options.referer) options.referer = new URL(file.url).origin + '/';
 
