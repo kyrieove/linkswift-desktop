@@ -1,0 +1,26 @@
+{
+  "name": "linkswift-desktop",
+  "version": "0.1.0",
+  "description": "粘贴网盘分享链接，后台取直链，推给 aria2 / 剪贴板 / 浏览器",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "author": "kyrieove",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "fetch-userscript": "node scripts/fetch-userscript.js",
+    "probe:boot": "electron tools/probe/probe-boot.js",
+    "probe:aria2": "node tools/probe/probe-aria2.js",
+    "probe:injection": "electron tools/probe/probe-injection.js",
+    "probe:throttle": "electron tools/probe/probe-throttle-control.js"
+  },
+  "dependencies": {
+    "@sweetalert2/theme-dark": "5.0.26",
+    "jquery": "3.6.0",
+    "js-md5": "0.7.3",
+    "sweetalert2": "11.4.8"
+  },
+  "devDependencies": {
+    "electron": "44.8.0"
+  }
+}

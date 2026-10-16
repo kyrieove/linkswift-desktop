@@ -1,0 +1,44 @@
+LinkSwift Desktop
+Copyright (C) 2026 kyrieove
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+This project embeds and drives the following upstream work. It is not affiliated
+with or endorsed by the upstream authors.
+
+LinkSwift
+  Author: hmjz100, 油小猴
+  Source: https://github.com/hmjz100/LinkSwift
+  License: AGPL-3.0-or-later
+  The app fetches the latest version at runtime. A pinned copy is also bundled in
+  resources/userscript.user.js as an offline fallback. That file is upstream code,
+  redistributed unmodified under the same AGPL-3.0-or-later license.
+
+网盘直链下载助手
+  Author: 油小猴
+  LinkSwift is derived from this project. See
+  https://www.youxiaohou.com/ for the original work.
+
+---
+
+Bundled third-party runtime dependencies, injected into the page at runtime:
+
+  jQuery 3.6.0                     MIT License
+  SweetAlert2 11.4.8               MIT License
+  @sweetalert2/theme-dark 5.0.26   MIT License
+  js-md5 0.7.3                     MIT License
+
+  Electron 44.8.0                  MIT License
+  aria2 (optional, not bundled)    GPL-2.0-or-later
