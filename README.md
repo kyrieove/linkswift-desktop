@@ -43,12 +43,15 @@ npm run fetch-userscript
 
 ```
 npm run probe:boot       # 用本地页面跑通整个注入和驱动链路
+npm run probe:ui         # 渲染进程 + preload + IPC 的端到端契约
 npm run probe:aria2      # 对真实 aria2 验证 RPC 投递（需先启动 aria2）
 npm run probe:injection  # document-start 注入时机
 npm run probe:throttle   # 隐藏窗口的定时器节流，以及关掉节流后的对照
 ```
 
-`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`。它用 host resolver 规则把 `pan.quark.cn` 指到本地，因此 preload 的域名判断是真的在跑。
+`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`，`probe:ui` 写到
+`%TEMP%\linkswift-ui-report.json`。前者用 host resolver 规则把 `pan.quark.cn`
+指到本地页面，后者加载真实的渲染进程和真实 preload，都不是替身。
 
 ## 许可证
 
