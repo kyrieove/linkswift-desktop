@@ -87,6 +87,8 @@
     showToken: document.getElementById('show-token'),
     allowTransfer: document.getElementById('allow-transfer'),
     saveSettings: document.getElementById('save-settings'),
+    testAria2: document.getElementById('test-aria2'),
+    aria2TestResult: document.getElementById('aria2-test-result'),
     settingsStatus: document.getElementById('settings-status'),
     settingsError: document.getElementById('settings-error'),
     jobList: document.getElementById('job-list'),
@@ -107,6 +109,7 @@
   let pendingJobId = null;
   let submitting = false;
   let saving = false;
+  let testing = false;
   let clipboardProbeTimer = 0;
 
   /* ------------------------------------------------------------- helpers --- */
@@ -134,6 +137,11 @@
       const reason = HUMAN_REASONS[state.reason];
       if (reason) return { label: reason.chip, tone: 'warn' };
     }
+    // A cancel is a failure in the contract but not a fault the user should read
+    // as an error.
+    if (state.phase === 'failed' && state.code === 'cancelled') {
+      return { label: '已取消', tone: 'busy' };
+    }
     return (
       PHASE_CHIPS[state.phase] || {
         label: state.phase ? String(state.phase) : '未知状态',
@@ -155,7 +163,11 @@
       providerLabel(job) + ' ' + String(job.link && job.link.shareId) + '：' + chipInfo(job).label;
   }
 
-  function setNote(node, text) {
+  function setNote(node, text, tone) {
+    if (tone === 'ok' || tone === 'error') {
+      node.classList.toggle('note--ok', tone === 'ok');
+      node.classList.toggle('note--error', tone === 'error');
+    }
     if (text) {
       node.textContent = text;
       node.hidden = false;
@@ -408,11 +420,10 @@
     restoreListUiState(ui);
   }
 
-  function handleJobEvent(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    const job = payload.job;
+  function handleJobEvent(job) {
+    // The event carries a whole Job, which is also what the preview mock emits.
     if (!job || typeof job !== 'object' || !job.id) return;
-    const id = payload.jobId || job.id;
+    const id = job.id;
     if (!jobs.has(id)) jobOrder.unshift(id);
     jobs.set(id, job);
     if (pendingJobId === id) {
@@ -602,6 +613,32 @@
     }
   }
 
+  async function testAria2() {
+    if (testing) return;
+    setNote(dom.aria2TestResult, '');
+
+    const config = readSettingsForm().aria2;
+    if (!config.domain) {
+      setNote(dom.aria2TestResult, '地址不能为空。', 'error');
+      dom.aria2Domain.focus();
+      return;
+    }
+
+    testing = true;
+    dom.testAria2.setAttribute('aria-busy', 'true');
+    dom.testAria2.textContent = '测试中…';
+    try {
+      const result = await api.testAria2(config);
+      setNote(dom.aria2TestResult, result.message, result.ok ? 'ok' : 'error');
+    } catch (err) {
+      setNote(dom.aria2TestResult, '测试失败：' + describeError(err), 'error');
+    } finally {
+      testing = false;
+      dom.testAria2.removeAttribute('aria-busy');
+      dom.testAria2.textContent = '测试连接';
+    }
+  }
+
   /* ------------------------------------------------------------------ init --- */
 
   dom.form.addEventListener('submit', (event) => {
@@ -620,6 +657,7 @@
   });
 
   dom.saveSettings.addEventListener('click', saveSettings);
+  dom.testAria2.addEventListener('click', testAria2);
 
   window.addEventListener('focus', scheduleClipboardProbe);
 
@@ -662,7 +700,7 @@
     ];
 
     function emit(job) {
-      for (const handler of listeners) handler({ jobId: job.id, job: job });
+      for (const handler of listeners) handler(job);
     }
 
     function step(id, ms, state) {
@@ -734,6 +772,12 @@
       setSettings(settings) {
         demoSettings = JSON.parse(JSON.stringify(settings));
         return Promise.resolve(JSON.parse(JSON.stringify(demoSettings)));
+      },
+      testAria2(config) {
+        if (!config || !config.domain) {
+          return Promise.resolve({ ok: false, message: '地址不能为空。' });
+        }
+        return Promise.resolve({ ok: true, message: '连上了，aria2 1.37.0（预览数据）' });
       },
       revealWindow(jobId) {
         const job = demoJobs.get(jobId);
