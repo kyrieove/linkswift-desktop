@@ -69,7 +69,7 @@
 
 ### 步骤 1.3 登录（需要用户）
 
-1. 用 `mcp` 无关的方式：让应用把任务窗口显示出来（任务状态为 `needs-human` 时它会自己 `show()`）。告诉用户：在弹出的百度分享页窗口里登录一次，完成后告知你。**不要代填密码，不碰验证码。**
+1. 任务状态为 `needs-human` 时应用会自己把任务窗口 `show()` 出来。告诉用户：在弹出的百度分享页窗口里登录一次，完成后告知你。**不要代填密码，不碰验证码。**
 2. 用户确认后，重新提交（先 `taskkill` 不是必须；直接再提交一条即可），回到 1.2。
 3. 若登录后仍 `needs-human`：这就是总方案第 4 步第 3 小项的情形。**只在这时**做下面的授权窗口：
    - 在 `handleOpenTab` 里，对 `openapi.baidu.com` 新开一个**可见** `BrowserWindow`，同 `partition`（`persist:linkswift`），加载该授权 URL。分区上注册的 netdisk preload 会注入上游脚本；上游在 `login_success` 页把 token `GM_setValue` 进 store。
@@ -83,7 +83,7 @@
 1. 等 aria2 完成：`node tools/probe/aria2-status.js` 里该任务 `status` 为 `complete`，`completedLength == totalLength`。
 2. 自己量文件：`Get-Item D:\2\dev\linkswift\test_download\*`。百度文件 `Length` 约 22.8 MB（MB 按 1024²，误差 <0.1 MB）。
 3. 目录里没有该文件的 `.aria2` 残留。
-4. 若 aria2 报 412/403：先用 node `fetch` 带 `Range: bytes=0-99` 复现（见 `docs/orch` 之外的做法：把 aria2 实际收到的 url 和 headers 取出来对比变体）。百度直链常要求特定 `User-Agent`（`pan.baidu.com`）。**先复现再改。**
+4. 若 aria2 报 412/403：先用 node `fetch` 带 `Range: bytes=0-99` 复现：取出推给 aria2 的 url 和 headers，分别去掉 Cookie / UA / Referer 对比，看哪个头决定 412/403。夸克那次就是这样定位的。百度直链常要求特定 `User-Agent`（`pan.baidu.com`）。**先复现再改。**
 5. 通过后提交：`fix: 百度真机跑通 ...`，提交信息说明实际改了什么。提交前自审 diff：删掉临时日志、死代码。
 
 ## 第 2 部分：收尾（第 1 部分通过后）
