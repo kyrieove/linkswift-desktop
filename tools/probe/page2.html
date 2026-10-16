@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+  window.__ticks = 0;
+  window.__events = [];
+  setInterval(() => { window.__ticks++; }, 100);
+  document.cookie = 'probe_cookie=ck-value; path=/';
+  window.__cookieAtLoad = document.cookie;
+  document.addEventListener('visibilitychange', () => {
+    window.__events.push(document.visibilityState + '@' + Math.round(performance.now()));
+  });
+</script>
+</head>
+<body>probe</body>
+</html>

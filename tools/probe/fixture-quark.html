@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>夸克网盘 · 分享</title>
+</head>
+<body>
+  <div class="share-header">
+    <div class="share-btns">
+      <button class="ant-btn">保存到网盘</button>
+      <button class="ant-btn ant-btn-primary">下载</button>
+    </div>
+  </div>
+  <div class="file-list">
+    <div class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"></span></div>
+    <div class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"></span></div>
+  </div>
+  <script>
+    // Enough of a page for the userscript to recognise a quark share page: the
+    // mount anchor it injects into, and the factStat global it reads pwd_id from.
+    window.factStat = { ut: { baseParams: { pwd_id: 'FIXTUREPWDID' } } };
+  </script>
+</body>
+</html>

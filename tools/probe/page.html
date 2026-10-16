@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+  window.__order = ['page-inline-head'];
+  window.__PAGE_TOKEN = 'PAGE_JS_TOKEN';
+  window.factStat = { ut: { baseParams: { pwd_id: 'PWDID_123' } } };
+  window.__documentStart = (typeof window.__probe !== 'undefined');
+  localStorage.setItem('probe_ls', 'ls-value');
+  document.cookie = 'probe_cookie=ck-value; path=/';
+</script>
+</head>
+<body>
+<script>
+  window.__order.push('page-inline-body');
+  let ticks = 0;
+  const interval = setInterval(() => { ticks++; window.__ticks = ticks; }, 100);
+  setTimeout(() => clearInterval(interval), 6000);
+  document.addEventListener('DOMContentLoaded', () => window.__order.push('DOMContentLoaded'));
+  window.addEventListener('load', () => window.__order.push('load'));
+</script>
+</body>
+</html>
