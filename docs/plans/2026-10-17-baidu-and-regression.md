@@ -67,6 +67,10 @@
    - **`needs-human/login`**：说明用户的百度分区没登录，或授权页被拒。去 1.3。
    - **失败 / 一直卡在提取中超过 90 秒**：用 cdp 读分享页 body 文字和 `.swal2-container` 文字，贴给用户和汇报；看主进程是否需要第 2 部分第 1 项的日志开关再抓。**先定位，再改代码。**
 
+### 已完成：用户已在应用分区里登录百度（2026-10-16 晚）
+
+用户已在 `persist:linkswift` 分区登录百度，并经 `tools/probe/cdp-quit.js` 优雅退出（cookie 已落盘）。**登录后首次提交**百度任务的结果：任务 `failed`，错误类型 `no-files`（「没取到文件。分享页结构可能变了」）。这是登录后的新现象，**先定位这个**：用 CDP 读百度页面的 `.swal2-container` 文字、`document.body.innerText`，看上游弹窗是否出现、文件列表是否被读到；再对照 `src/main/job.js` 里产出 `no-files` 的位置。不要假设登录态丢失，先用页面上是否显示用户名（`132*****632`）核实。
+
 ### 步骤 1.3 登录（需要用户）
 
 **已知缺陷（2026-10-16 晚用户实测，先修这个再让用户登录）**：百度分享页未登录时，点完「Aria2 下载」后上游弹窗不出现，步骤 8 `wait-for button[action="sendto"][type="aria2"]` 等满 60 秒 → `driver-result ok:false` → `job.fail('upstream-redesigned')` → `close()` 销毁窗口。用户正在窗口里登录时窗口被销毁，体验是「点登录没反应」「又超时了」。等人登录不应计时。修法方向（先读代码再定，别照抄）：wait-for 超时时检查页面是否有登录态缺失的证据（`.app-login` 可见、`#passport-login-pop` 出现，或 `getToken` 授权失败），有就 `needsHuman('login')` 并**保持窗口不销毁、不计时**；用户登录完成后提供「重试」（重新加载分享页、重跑步骤）。证据：页面登录入口是 `a.app-login`，弹窗 `#passport-login-pop`（z-index 60001），用 CDP 点 `a.app-login` 可正常弹出。修完要用 CDP 实测：窗口在 60 秒后仍然存在。
