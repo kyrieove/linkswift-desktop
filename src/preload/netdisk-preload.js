@@ -8,13 +8,10 @@ const { runDriver } = require('./driver');
 /**
  * The preload for the hidden netdisk window.
  *
- * It runs in the isolated world and does four things, in order:
- *   1. decide whether this frame and this host are ours to handle
- *   2. install jQuery, SweetAlert2, js-md5 and the GM_* shim in the page's main world
- *   3. run the userscript in that same main world
- *   4. relay observations up to the main process, and driver commands back down
- *
- * It never commands the page except through the step table in shared/providers.js.
+ * It runs in the isolated world, installs jQuery, SweetAlert2, js-md5 and the
+ * GM_* shim into the page's main world, runs the userscript there, and relays
+ * observations up to the main process and driver commands back down. It never
+ * commands the page except through the step table in shared/providers.js.
  */
 
 /**

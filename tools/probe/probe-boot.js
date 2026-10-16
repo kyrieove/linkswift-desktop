@@ -108,8 +108,17 @@ async function run() {
     consoleMessages.push(`[preload-error] ${preloadPath} ${error.message}`);
   });
 
-  await new Promise((resolve) => setTimeout(resolve, WAIT_MS));
-  trace(`waited:${WAIT_MS}ms`);
+  // A job window is destroyed the moment its job settles, so the page state has
+  // to be read while the job is still running. Wait for the injection to land,
+  // snapshot then, and only afterwards wait out the rest of the flow.
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline && !observations.some((o) => o.kind === 'injected')) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  // The driver reaches its click about 1.3s after injection, and the resulting
+  // dialog settles the job and destroys this window, so sample early.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  trace('snapshot:page-state');
 
   const read = async (expression) => {
     try {
@@ -119,10 +128,7 @@ async function run() {
     }
   };
 
-  const report = {
-    scriptSource: { version: script.version, origin: script.origin, chars: script.source.length },
-    submitResult: result,
-    finalState: job.state,
+  const pageState = {
     loadedUrl: await read('location.href'),
     hostname: await read('location.hostname'),
     mainWorld: {
@@ -134,7 +140,9 @@ async function run() {
       GM_info_version: await read('window.GM_info && window.GM_info.script.version'),
       shimInstalled: await read('window.__linkswiftShimInstalled === true'),
       unsafeWindowIsWindow: await read('typeof unsafeWindow === "undefined" ? "not-defined" : (unsafeWindow === window)'),
-      userscriptReentryGuard: await read('Boolean(window[encodeURIComponent("LinkSwift:主代码")])'),
+      // The userscript's re-entry guard key, matched by prefix so this probe does
+      // not depend on a literal that survives file re-encoding.
+      userscriptReentryGuard: await read('Object.keys(window).some((k) => k.startsWith("LinkSwift"))'),
     },
     dom: {
       scriptButton: await read('Boolean(document.querySelector(\'.pl-button-mode[data-mode="aria2"]\'))'),
@@ -142,6 +150,17 @@ async function run() {
       initButtonPresent: await read('Boolean(document.querySelector(".pl-button-init"))'),
       checkboxWrappers: await read('document.querySelectorAll(".file-list .ant-checkbox-wrapper").length'),
     },
+  };
+
+  const remaining = Math.max(0, deadline - Date.now());
+  await new Promise((resolve) => setTimeout(resolve, remaining));
+  trace(`waited:${WAIT_MS}ms`);
+
+  const report = {
+    scriptSource: { version: script.version, origin: script.origin, chars: script.source.length },
+    submitResult: result,
+    finalState: job.state,
+    pageState,
     observationKinds: observations.reduce((counts, observation) => {
       counts[observation.kind] = (counts[observation.kind] ?? 0) + 1;
       return counts;
