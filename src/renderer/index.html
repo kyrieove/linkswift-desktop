@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinkSwift 网盘直链助手</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="appbar">
+      <span class="appbar__mark" aria-hidden="true"></span>
+      <h1 class="appbar__title">LinkSwift</h1>
+      <span class="appbar__sub">网盘直链助手</span>
+    </header>
+
+    <section class="composer" aria-labelledby="composer-label">
+      <form id="submit-form" novalidate>
+        <label class="composer__label" id="composer-label" for="link-input">粘贴分享链接</label>
+        <div class="composer__row">
+          <input
+            id="link-input"
+            class="composer__input"
+            type="text"
+            name="link"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            aria-describedby="composer-hint"
+            placeholder="https://pan.quark.cn/s/… 或 https://pan.baidu.com/s/…"
+          />
+          <button id="paste-btn" class="btn" type="button">粘贴</button>
+          <button id="submit-btn" class="btn btn--primary" type="submit">提取直链</button>
+        </div>
+        <p id="composer-error" class="note note--error" role="alert" hidden></p>
+        <p id="composer-status" class="note" role="status" hidden></p>
+        <p id="composer-hint" class="composer__hint">
+          支持夸克网盘与百度网盘的分享链接，回车即可提交。带提取码的链接可直接粘贴完整地址。
+        </p>
+      </form>
+    </section>
+
+    <main class="workspace">
+      <details class="settings" id="settings">
+        <summary class="settings__summary">
+          <span class="settings__summary-label">设置</span>
+          <span class="settings__summary-meta" id="settings-summary">推送目标</span>
+        </summary>
+        <div class="settings__body">
+          <div class="settings__group" role="radiogroup" aria-labelledby="delivery-label">
+            <p class="settings__legend" id="delivery-label">推送目标</p>
+            <div class="segmented">
+              <input
+                class="segmented__input"
+                type="radio"
+                name="delivery"
+                id="delivery-aria2"
+                value="aria2"
+              />
+              <label class="segmented__label" for="delivery-aria2">aria2</label>
+              <input
+                class="segmented__input"
+                type="radio"
+                name="delivery"
+                id="delivery-clipboard"
+                value="clipboard"
+              />
+              <label class="segmented__label" for="delivery-clipboard">剪贴板</label>
+              <input
+                class="segmented__input"
+                type="radio"
+                name="delivery"
+                id="delivery-browser"
+                value="browser"
+              />
+              <label class="segmented__label" for="delivery-browser">浏览器</label>
+            </div>
+            <p class="field__hint" id="delivery-hint"></p>
+          </div>
+
+          <fieldset class="settings__group">
+            <legend class="settings__legend">aria2 RPC</legend>
+            <div class="settings__grid">
+              <div class="field">
+                <label class="field__label" for="aria2-domain">地址</label>
+                <input
+                  class="input input--mono"
+                  id="aria2-domain"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="http://localhost"
+                />
+                <p class="field__hint">含协议</p>
+              </div>
+              <div class="field">
+                <label class="field__label" for="aria2-port">端口</label>
+                <input
+                  class="input input--mono"
+                  id="aria2-port"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  placeholder="6800"
+                />
+                <p class="field__hint">aria2 默认 6800，Motrix 为 16800</p>
+              </div>
+              <div class="field">
+                <label class="field__label" for="aria2-path">路径</label>
+                <input
+                  class="input input--mono"
+                  id="aria2-path"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="/jsonrpc"
+                />
+                <p class="field__hint">通常为 /jsonrpc</p>
+              </div>
+              <div class="field">
+                <label class="field__label" for="aria2-token">令牌</label>
+                <input
+                  class="input input--mono"
+                  id="aria2-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="RPC 密钥，未设置为空"
+                />
+                <label class="checkbox">
+                  <input type="checkbox" id="show-token" />
+                  <span>显示令牌</span>
+                </label>
+              </div>
+              <div class="field">
+                <label class="field__label" for="aria2-dir">下载目录</label>
+                <input
+                  class="input input--mono"
+                  id="aria2-dir"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="留空使用 aria2 默认目录"
+                />
+                <p class="field__hint">留空即交给 aria2 自己决定</p>
+              </div>
+            </div>
+          </fieldset>
+
+          <label class="checkbox checkbox--warn">
+            <input type="checkbox" id="allow-transfer" />
+            <span>
+              允许自动转存到我的百度网盘。百度分享页超过 50MB 的文件无法直接取直链，勾选后程序会先把文件保存到你自己的百度网盘，再从你的网盘取链；不勾选则这类任务会以「未取到文件」结束。
+            </span>
+          </label>
+
+          <div class="settings__actions">
+            <button id="save-settings" class="btn btn--primary" type="button">保存设置</button>
+            <span id="settings-status" class="note note--ok" role="status" hidden></span>
+            <span id="settings-error" class="note note--error" role="alert" hidden></span>
+          </div>
+        </div>
+      </details>
+
+      <section class="jobs" aria-labelledby="jobs-title">
+        <div class="jobs__head">
+          <h2 class="jobs__title" id="jobs-title">任务</h2>
+          <span class="jobs__count" id="jobs-count"></span>
+        </div>
+        <p class="empty" id="jobs-empty">还没有任务。粘贴一个分享链接开始。</p>
+        <ul class="jobs__list" id="job-list"></ul>
+      </section>
+    </main>
+
+    <p class="sr-only" id="live-region" role="status"></p>
+
+    <script defer src="renderer.js"></script>
+  </body>
+</html>
