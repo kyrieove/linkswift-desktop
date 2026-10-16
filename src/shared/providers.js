@@ -10,6 +10,9 @@
  * @typedef {{ do: 'wait-for', selector: Selector, timeoutMs: number }
  *   | { do: 'click', selector: Selector, optional?: boolean }
  *   | { do: 'click-all', selector: Selector, optional?: boolean }
+ *   | { do: 'ensure-selection', selected: Selector, unselected: Selector, optional?: boolean }
+ *   | { do: 'enter-folders', rowName: Selector, timeoutMs: number, maxDepth?: number }
+ *   | { do: 'ensure-anchor', ancestor: string, addClass: string, create: string }
  *   | { do: 'fill', selector: Selector, value: string, optional?: boolean }
  *   | { do: 'sleep', ms: number }} Step
  *
@@ -31,8 +34,8 @@ const QUARK_STEPS = [
   // The script's own menu entry. Its presence proves the script booted and that
   // detectPage() has already run for the share page.
   { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
-  // The passcode box, if the share needs one. Selectors are unverified against a
-  // live page; the driver reports the miss instead of failing silently.
+  // A passcode box, on the shares that need one. A share link without a pwd= has
+  // none, and the step is optional so that is not a failure.
   {
     do: 'fill',
     selector: ['.share-password input', 'input[placeholder*="密码"]', 'input[placeholder*="提取码"]'],
@@ -40,13 +43,24 @@ const QUARK_STEPS = [
     optional: true,
   },
   { do: 'sleep', ms: 800 },
-  // Tick the rows. The script reads React's props.selectedRowKeys, so the page's
-  // own checkbox is the only way in.
+  // A share can point at a folder rather than a file. The userscript refuses to
+  // extract while the selection holds a folder, so descend until files are on
+  // screen. Verified on a live page: a share whose top row is a folder needs this.
   {
-    do: 'click-all',
-    selector: [
-      '.file-list .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-checked)',
-      '.file-list input.ant-checkbox-input:not(:checked)',
+    do: 'enter-folders',
+    rowName: ['.ant-table-row .filename-text', '.ant-table-row [class*="filename-text"]'],
+    timeoutMs: 20000,
+  },
+  // A share page arrives with its files already selected, verified on a live page.
+  // Only touch the checkboxes when nothing is selected, or the click would
+  // deselect what the page chose.
+  {
+    do: 'ensure-selection',
+    selected: ['.file-list .ant-checkbox-wrapper-checked', '.file-list .ant-table-row-selected'],
+    // The header box selects every row. Prefer it, and fall back to the rows.
+    unselected: [
+      '.file-list .ant-table-thead .ant-checkbox-wrapper',
+      '.file-list .ant-table-row .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-checked)',
     ],
   },
   { do: 'sleep', ms: 500 },
@@ -55,6 +69,8 @@ const QUARK_STEPS = [
 
 /** @type {Step[]} */
 const BAIDU_STEPS = [
+  // Measured on a live share page: the userscript does mount its own button here,
+  // and it is present within two seconds. No anchor patching is needed.
   { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
   {
     do: 'fill',
@@ -63,9 +79,17 @@ const BAIDU_STEPS = [
     optional: true,
   },
   { do: 'sleep', ms: 800 },
+  // A single-file baidu share renders no checkbox list at all, so a missing list
+  // is normal here and the selection step must not fail on it.
   {
-    do: 'click-all',
-    selector: ['.file-list .checkbox-wrapper:not(.checked)', '.file-list input[type="checkbox"]:not(:checked)'],
+    do: 'ensure-selection',
+    selected: ['.file-list .checkbox-wrapper.checked', '.file-list .wp-s-file-checked'],
+    unselected: [
+      '.file-list .wp-s-core-pan .file-list-header input[type="checkbox"]',
+      '.file-list .checkbox-wrapper:not(.checked)',
+      '.file-list input[type="checkbox"]:not(:checked)',
+    ],
+    optional: true,
   },
   { do: 'sleep', ms: 500 },
   { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
