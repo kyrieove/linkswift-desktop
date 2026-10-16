@@ -92,6 +92,35 @@
 - 便携版打包，以及 GitHub 仓库 `kyrieove/linkswift-desktop` 尚未创建。
 ## 当前接手状态（2026-10-16）
 
+### 2026-10-16 晚更新（以本节为准，下面「最近已验证」中夸克相关条目已过时）
+
+- 执行方案：`docs/plans/2026-10-16-two-file-acceptance.md`。5 步里完成 1–3，剩 4（百度真机）、5（冷启动回归 + 目录选择器）。
+- 已提交：`e2992c3` proxyRequest 带会话 cookie、写回 Set-Cookie、跟随重定向、返回 finalUrl（`tools/probe/check-proxy.js`，`npm run probe:proxy`，卡 `docs/orch/2026-10-16-proxy-cookie-redirect/`）；`6f40ddc` 夸克真机跑通。
+- **夸克已真机验证**：`test_download/033-V6.3.97-R1-优化版.zip` = 335,846,630 字节（320.29 MiB，页面 320.3M），无 `.aria2` 残留。
+- 夸克真机暴露的三个方案之外的缺口（均已修）：
+  1. `src/preload/main-world.js` 垫片：`responseType:'json'` 时 `response` 必须是解析后的对象。否则上游 `base.post` 对含中文的响应走 `escape` 再 `JSON.parse` 失败，报「获取下载地址失败」。
+  2. `src/shared/providers.js`：点完「Aria2 下载」后弹窗出现，还要点 `button[action="sendto"][type="aria2"]` 才会发 `aria2.addUri`。夸克和百度步骤表都补了 wait-for + click。
+  3. `src/main/aria2.js`：`addUri` 只转发了 UA 和 Referer，丢了 Cookie，aria2 收到 412。现在 Cookie 以 `header` 选项转发。方案里的「根因 3」（HttpOnly cookie 缺失）实测不成立：`document.cookie` 的值足够，故没做 `deliver` 重建 Cookie。
+- 方案「根因 1、2」（cookie、重定向）对夸克不是瓶颈；它们是否对百度必要，等第 4 步验证。
+- **未验证**：百度、冷启动免登录、目录选择器的浏览/取消/保存。
+- 工作树：`probe-readme.md` 保留未跟踪（用户决定）。
+
+### 调试方法（避免重蹈覆辙）
+
+- 夸克卡住那次，我为抓日志重启应用 5 次、每次让用户重新提交，浪费很多轮。应用本身没有调试出口。
+- 正确做法：用 `npx electron . --remote-debugging-port=9222` 启动；`http://127.0.0.1:9222/json` 列出页面；通过 CDP `Runtime.evaluate` 在渲染页（`index.html`）里填输入框、点「提取直链」，在夸克页读 `.swal2-container` 的文字。主进程日志在启动命令的 stdout。不要让用户手动提交。
+- 查 aria2 状态用 RPC：`aria2.tellActive` / `tellStopped`（密钥 `linkswift-local-check`）。
+- 待做（retro 建议，未实现）：
+  1. `job.js` 加 `LINKSWIFT_DEBUG=1` 才打印 observation 与响应摘要，别再临时加日志。
+  2. 把 `aria2.addUri` 的选项构造拆成纯函数，加进 assert 脚本：Cookie 丢失本可被拦下。仓库目前没有 lint / test / CI。
+  3. 执行方案的「根因」要区分「已验证」和「推断」，真机走通前不下结论。
+
+### 编排（orch）注意
+
+- `run-card.mjs` 派发和 `--commit` 会被 auto 模式分类器拦截，即使用户口头放行。用户需在 settings 里给 `node D:/2/dev/orch-runner/orchestrate/runner/run-card.mjs:*` 加 Bash 权限规则，否则要用户在 PowerShell 里自己跑。
+- 卡 `proxy-cookie-redirect` 的 review（luna）有 2 条 P1，均为误报，已在卡的 Acceptance 记录。
+- runner 的基线 Check 在 `check-proxy.js` 尚不存在时会弹 Electron 报错框，点「确定」即可。
+
 用户当前目标：让提供的夸克和百度分享文件完整下载到 `D:\2\dev\linkswift\test_download`。只有两个文件完整落盘才算验收成功。用户准备让 Claude 先查看问题并给出计划，之后再由本会话继续执行。
 
 ### 最近已验证
