@@ -88,6 +88,7 @@
     allowTransfer: document.getElementById('allow-transfer'),
     saveSettings: document.getElementById('save-settings'),
     testAria2: document.getElementById('test-aria2'),
+    browseAria2Dir: document.getElementById('browse-aria2-dir'),
     aria2TestResult: document.getElementById('aria2-test-result'),
     settingsStatus: document.getElementById('settings-status'),
     settingsError: document.getElementById('settings-error'),
@@ -656,6 +657,23 @@
     dom.aria2Token.type = dom.showToken.checked ? 'text' : 'password';
   });
 
+  dom.browseAria2Dir.addEventListener('click', async () => {
+    setNote(dom.settingsError, '');
+    dom.browseAria2Dir.disabled = true;
+    dom.browseAria2Dir.textContent = '选择中…';
+    try {
+      const selected = await api.chooseDirectory();
+      if (typeof selected === 'string' && selected) {
+        dom.aria2Dir.value = selected;
+        dom.aria2Dir.focus();
+      }
+    } catch (error) {
+      setNote(dom.settingsError, '选择下载目录失败：' + describeError(error));
+    } finally {
+      dom.browseAria2Dir.disabled = false;
+      dom.browseAria2Dir.textContent = '浏览…';
+    }
+  });
   dom.saveSettings.addEventListener('click', saveSettings);
   dom.testAria2.addEventListener('click', testAria2);
 

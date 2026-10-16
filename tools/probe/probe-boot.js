@@ -17,7 +17,7 @@
  * process is unreliable through a shell pipeline.
  */
 
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, session } = require('electron');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -28,9 +28,11 @@ const { Store } = require('../../src/main/store');
 const { UserscriptSource } = require('../../src/main/userscript');
 const { JobManager } = require('../../src/main/job');
 const { loadVendor } = require('../../src/main/vendor');
-
 const ROOT = path.join(__dirname, '..', '..');
-const FIXTURE = path.join(__dirname, 'fixture-quark.html');
+const FIXTURE = path.join(
+  __dirname,
+  process.argv.includes('--react') ? 'fixture-quark-react.html' : 'fixture-quark.html',
+);
 const REPORT_PATH = path.join(os.tmpdir(), 'linkswift-boot-report.json');
 
 // Electron quits by default once every window closes. A job window is destroyed
@@ -59,6 +61,16 @@ async function run() {
 
   await app.whenReady();
   trace('app:ready');
+  // The preload is registered on the session, the way the app does it. Registering
+  // it per window as well would run two instances that race each other.
+  const probePartition = 'persist:linkswift-probe';
+  const probePreload = path.join(ROOT, 'src', 'preload', 'netdisk-preload.js');
+  session.fromPartition(probePartition).registerPreloadScript({
+    id: 'probe-netdisk-boot',
+    type: 'frame',
+    filePath: probePreload,
+  });
+
 
   const port = server.address().port;
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'linkswift-probe-'));
@@ -80,7 +92,7 @@ async function run() {
     userscript,
     vendor,
     resources,
-    partition: 'persist:linkswift-probe',
+    partition: probePartition,
     preloadPath: path.join(ROOT, 'src', 'preload', 'netdisk-preload.js'),
     emit: () => {},
   });

@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('linkswift', {
   setSettings: (settings) => ipcRenderer.invoke(INVOKE.setSettings, settings),
   revealWindow: (jobId) => ipcRenderer.invoke(INVOKE.revealWindow, jobId),
   testAria2: (config) => ipcRenderer.invoke(INVOKE.testAria2, config),
+  chooseDirectory: () => ipcRenderer.invoke(INVOKE.chooseDirectory),
   onJobEvent: (handler) => {
     ipcRenderer.on(PUSH.jobEvent, (_event, job) => handler(job));
   },

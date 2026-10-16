@@ -1,5 +1,6 @@
 'use strict';
 
+const { dialog } = require('electron');
 const { INVOKE } = require('../shared/protocol');
 const aria2 = require('./aria2');
 
@@ -18,6 +19,12 @@ function registerIpc(bus, manager) {
   bus.handle(INVOKE.cancel, (_event, jobId) => manager.cancel(String(jobId)));
   bus.handle(INVOKE.getSettings, () => manager.store.getSettings());
   bus.handle(INVOKE.setSettings, (_event, settings) => manager.store.setSettings(settings ?? {}));
+  bus.handle(INVOKE.chooseDirectory, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   bus.handle(INVOKE.revealWindow, (_event, jobId) => manager.reveal(String(jobId)));
 
   bus.handle(INVOKE.testAria2, async (_event, config) => {

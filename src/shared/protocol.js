@@ -76,6 +76,7 @@ const INVOKE = {
   setSettings: 'linkswift:settings:set',
   revealWindow: 'linkswift:window:reveal',
   testAria2: 'linkswift:aria2:test',
+  chooseDirectory: 'linkswift:directory:choose',
 };
 
 /**

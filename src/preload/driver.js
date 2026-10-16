@@ -197,6 +197,20 @@ async function runStep(step, passcode) {
       await sleep(step.ms);
       return;
 
+    case 'ensure-anchor': {
+      await waitFor(step.ancestor, 15000);
+      const outcome = await runInPage(`(() => {
+        const anchor = document.querySelector(${JSON.stringify(step.ancestor)});
+        if (!anchor) return { ok: false, reason: 'anchor not found' };
+        if (anchor.querySelector('.g-dropdown-button.tools-more')) return { ok: true, created: false };
+        anchor.parentElement?.classList.add(${JSON.stringify(step.addClass)});
+        anchor.insertAdjacentHTML('beforeend', ${JSON.stringify(step.create)});
+        return { ok: true, created: true };
+      })()`);
+      if (!outcome.ok) throw new Error(`无法恢复页面挂载点：${step.ancestor}`);
+      return;
+    }
+
     case 'wait-for':
       await waitFor(step.selector, step.timeoutMs);
       return;

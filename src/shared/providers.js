@@ -69,8 +69,9 @@ const QUARK_STEPS = [
 
 /** @type {Step[]} */
 const BAIDU_STEPS = [
-  // Measured on a live share page: the userscript does mount its own button here,
-  // and it is present within two seconds. No anchor patching is needed.
+  // Current share pages expose .x-button-box but no longer expose the nested
+  // toolbar classes the upstream userscript watches. Restore that mount point.
+  { do: 'ensure-anchor', ancestor: '.x-button-box', addClass: 'module-share-top-bar', create: '<div class="g-dropdown-button tools-more"></div>' },
   { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
   {
     do: 'fill',

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>夸克网盘分享（React 夹具）</title>
+</head>
+<body>
+  <div class="share-header">
+    <div class="share-btns">
+      <button class="ant-btn">保存到网盘</button>
+      <button class="ant-btn ant-btn-primary">下载</button>
+    </div>
+  </div>
+
+  <div class="file-list list-file-share-height">
+    <div class="ant-table-wrapper">
+      <div class="ant-table">
+        <div class="ant-table-content">
+          <table>
+            <thead class="ant-table-thead">
+              <tr class="tr-header">
+                <th class="ant-table-selection-column">
+                  <label class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"><span class="ant-checkbox-inner"></span></span></label>
+                </th>
+                <th>文件名</th>
+              </tr>
+            </thead>
+            <tbody class="ant-table-tbody" id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // A stand-in for the page's React state, exposed the way React exposes it: a
+    // fiber object hanging off the container node under a __reactFiber$ key. The
+    // userscript and the driver both read it that way, so this fixture exercises
+    // the real read path rather than a special case.
+    const state = {
+      level: 0,
+      list: [],
+      selectedRowKeys: [],
+    };
+
+    // Level 0 is a folder, level 1 holds files. The driver has to descend.
+    const FOLDER = { fid: 'folder0000000000000000000000000001', file_name: '资料合集', file: false, size: 0 };
+    const FILES = [
+      { fid: 'file00000000000000000000000000001', file_name: '讲义.zip', file: true, size: 1234 },
+      { fid: 'file00000000000000000000000000002', file_name: '录屏.mp4', file: true, size: 5678 },
+    ];
+
+    function render() {
+      const tbody = document.getElementById('tbody');
+      tbody.textContent = '';
+
+      for (const item of state.list) {
+        const row = document.createElement('tr');
+        row.className = 'ant-table-row ant-table-row-level-0';
+        row.setAttribute('data-row-key', item.fid);
+        if (state.selectedRowKeys.includes(item.fid)) row.classList.add('ant-table-row-selected');
+
+        const selectionCell = document.createElement('td');
+        selectionCell.className = 'ant-table-selection-column';
+        const label = document.createElement('label');
+        const checked = state.selectedRowKeys.includes(item.fid);
+        label.className = 'ant-checkbox-wrapper' + (checked ? ' ant-checkbox-wrapper-checked' : '');
+        const span = document.createElement('span');
+        span.className = 'ant-checkbox' + (checked ? ' ant-checkbox-checked' : '');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'ant-checkbox-input';
+        input.checked = checked;
+        input.addEventListener('click', (event) => {
+          event.stopPropagation();
+          toggle(item.fid);
+        });
+        span.append(input, document.createElement('span'));
+        label.append(span);
+        selectionCell.append(label);
+
+        const nameCell = document.createElement('td');
+        const name = document.createElement('div');
+        name.className = 'filename-text';
+        name.textContent = item.file_name;
+        // The page opens a folder on a double click of the name.
+        name.addEventListener('dblclick', () => enter(item));
+        nameCell.append(name);
+
+        row.append(selectionCell, nameCell);
+        tbody.append(row);
+      }
+
+      attachFiber();
+    }
+
+    function toggle(fid) {
+      const at = state.selectedRowKeys.indexOf(fid);
+      if (at >= 0) state.selectedRowKeys.splice(at, 1);
+      else state.selectedRowKeys.push(fid);
+      render();
+    }
+
+    function enter(item) {
+      if (item.file) return;
+      state.level = 1;
+      state.list = FILES.slice();
+      // A real share page selects what it just navigated into.
+      state.selectedRowKeys = FILES.map((file) => file.fid);
+      render();
+    }
+
+    /**
+     * Expose the state the way React does: a fiber object on the container, with
+     * the component's props reachable by walking up through host fibers.
+     */
+    function attachFiber() {
+      const container = document.querySelector('.file-list');
+      const key = Object.keys(container).find((name) => name.startsWith('__reactFiber$'));
+      const fiberKey = key || '__reactFiber$fixture';
+
+      const hostFiber = { type: 'div', memoizedProps: { className: 'file-list' }, return: null };
+      const componentProps = { list: state.list, selectedRowKeys: state.selectedRowKeys.slice(), stoken: 'FIXTURE_STOKEN' };
+      const componentFiber = {
+        type: function ShareFileList() {},
+        memoizedProps: componentProps,
+        stateNode: { props: componentProps },
+        return: null,
+      };
+      hostFiber.return = componentFiber;
+      container[fiberKey] = hostFiber;
+    }
+
+    state.list = [FOLDER];
+    state.selectedRowKeys = [FOLDER.fid];
+    render();
+  </script>
+</body>
+</html>

@@ -131,16 +131,19 @@
                   <span>显示令牌</span>
                 </label>
               </div>
-              <div class="field">
+              <div class="field field--directory">
                 <label class="field__label" for="aria2-dir">下载目录</label>
-                <input
-                  class="input input--mono"
-                  id="aria2-dir"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="留空使用 aria2 默认目录"
-                />
+                <div class="directory-picker">
+                  <input
+                    class="input input--mono"
+                    id="aria2-dir"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="留空使用 aria2 默认目录"
+                  />
+                  <button id="browse-aria2-dir" class="btn" type="button">浏览…</button>
+                </div>
                 <p class="field__hint">留空即交给 aria2 自己决定</p>
               </div>
             </div>

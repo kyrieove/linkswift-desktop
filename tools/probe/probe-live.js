@@ -197,12 +197,25 @@ async function run() {
     if (!job) throw new Error('no job was created for that link');
 
     job.window.webContents.on('console-message', (event) => {
-      if (event.level === 'error') consoleMessages.push(String(event.message).slice(0, 200));
+      consoleMessages.push(`[${event.level}] ${String(event.message).slice(0, 400)}`);
     });
 
-    // The driver descends folders, then the userscript does its own batched
-    // extraction with a one-second throttle between batches.
-    await new Promise((resolve) => setTimeout(resolve, 75000));
+    const frames = [];
+    let elapsed = 0;
+    for (const interval of [500, 1000, 1500, 2500, 5000, 10000, 12000]) {
+      await new Promise((resolve) => setTimeout(resolve, interval));
+      elapsed += interval;
+      if (!job.window || job.window.isDestroyed()) break;
+      const state = await job.window.webContents.executeJavaScript(`({
+        href: location.href,
+        buttonCount: document.querySelectorAll('.pl-button-mode[data-mode="aria2"]').length,
+        xButtonBox: document.querySelectorAll('.x-button-box').length,
+        bodyLength: document.body ? document.body.innerHTML.length : -1,
+      })`).catch((error) => ({ error: error.message }));
+      frames.push({ at: elapsed, ...state, phase: job.state });
+      if (job.state.phase !== 'extracting') break;
+    }
+    report.frames = frames;
     report.finalState = job.state;
     report.consoleMessages = consoleMessages;
   }
