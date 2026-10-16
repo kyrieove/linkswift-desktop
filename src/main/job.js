@@ -94,7 +94,12 @@ function proxyRequest({ url, method, headers, body }) {
         port: target.port,
         path: `${target.pathname}${target.search}`,
         method,
-        headers,
+        headers: {
+          ...headers,
+          // Without an explicit length Node falls back to chunked encoding, and
+          // quark's API answers a chunked POST with 400.
+          ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+        },
       },
       (response) => {
         const chunks = [];
@@ -105,7 +110,11 @@ function proxyRequest({ url, method, headers, body }) {
             headerLines.push(`${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`);
           }
           resolve({
-            ok: (response.statusCode ?? 0) >= 200 && (response.statusCode ?? 0) < 400,
+            // A received response is a success for GM_xmlhttpRequest whatever the
+            // status; onerror is for network-level failure only. Routing a 4xx to
+            // onerror hides the body from the userscript and skips its own handling
+            // of API error codes such as quark's 23018.
+            ok: true,
             status: response.statusCode ?? 0,
             statusText: response.statusMessage ?? '',
             text: Buffer.concat(chunks).toString('utf8'),
@@ -211,11 +220,12 @@ class Job {
       title: `${provider.label} · ${this.link.shareId}`,
       webPreferences: {
         partition,
-        preload: preloadPath,
+        // The preload is registered once on the session, not here. Registering it in
+        // both places runs two instances that race each other.
         contextIsolation: true,
         nodeIntegration: false,
-        // The preload needs Node to require its own modules. The page still
-        // cannot reach it, because contextIsolation is on.
+        // The preload needs Node to require its own modules. The page still cannot
+        // reach it, because contextIsolation is on.
         sandbox: false,
         // A window that is shown and then hidden throttles page timers to about
         // 1 Hz, which stalls the script's polling. Measured; see DESIGN.md 4.3.
@@ -237,6 +247,11 @@ class Job {
     try {
       await this.window.loadURL(this.link.raw);
     } catch (error) {
+      // A share link that redirects aborts the first navigation, which Electron
+      // reports as ERR_ABORTED even though the page loads fine. Only a genuine
+      // failure is worth failing on; everything else is caught by the driver's
+      // wait-for timeout, which reports the real symptom.
+      if (error.code === 'ERR_ABORTED' || /ERR_ABORTED/.test(error.message)) return;
       this.fail('network', `加载分享页失败：${error.message}`);
     }
   }

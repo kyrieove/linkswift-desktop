@@ -140,7 +140,6 @@ async function run() {
       return;
     }
   }
-
   report({ kind: 'injected', href: location.href, provider: provider.id });
 
   ipcRenderer.on(INTERNAL.command, async (_event, command) => {
@@ -149,7 +148,23 @@ async function run() {
       return;
     }
 
+    // The page's GM_xmlhttpRequest waits on this. Without the relay the request
+    // never settles and the userscript sits on its loading dialog forever.
+    if (command.kind === 'http-response') {
+      toPage(command);
+      return;
+    }
+
     if (command.kind === 'run-driver') {
+      // Which frame is this preload running in? A driver in a subframe queries the
+      // wrong document and finds nothing.
+      const where = await webFrame
+        .executeJavaScript(
+          `JSON.stringify({ href: location.href, top: window.top === window, bodyLength: document.body ? document.body.innerHTML.length : -1 })`,
+        )
+        .catch((error) => `threw: ${error.message}`);
+      report({ kind: 'driver-frame', where, isMainFrame: process.isMainFrame });
+
       let result;
       try {
         result = await runDriver(provider, command.passcode ?? null);

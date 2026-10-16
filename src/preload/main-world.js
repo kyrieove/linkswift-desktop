@@ -138,7 +138,9 @@ function installLinkSwiftShim(boot) {
         if (data.ok) {
           if (typeof option.onload === 'function') option.onload(response);
         } else if (typeof option.onerror === 'function') {
-          option.onerror({ error: data.error || 'request failed', status: response.status });
+          // Carry the body through. Without it a rejected request is undiagnosable
+          // from the userscript's own error message.
+          option.onerror({ error: data.error || 'request failed', status: response.status, response: response });
         }
       } catch (error) {
         reportError(error);
