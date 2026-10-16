@@ -1,6 +1,6 @@
 'use strict';
 
-const { BrowserWindow, clipboard, app, shell } = require('electron');
+const { BrowserWindow, clipboard, app, shell, session } = require('electron');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
@@ -76,15 +76,13 @@ function extractFromAria2Body(body) {
 }
 
 /**
- * Node's fetch refuses to send forbidden header names such as Referer and
- * Origin, and the netdisk APIs need both. Use the raw HTTP client instead.
- *
- * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null }} request
- * @returns {Promise<{ ok: boolean, status: number, statusText: string, text: string, headers: string }>}
+ * @param {{ url: string, method: string, headers: Record<string, string> }} options
+ * @param {string | null} body
+ * @returns {Promise<{ statusCode: number, statusMessage: string, rawHeaders: string[], headers: Record<string, string | string[] | undefined>, setCookie: string[], buffer: Buffer }>}
  */
-function proxyRequest({ url, method, headers, body }) {
+function hop(options, body) {
   return new Promise((resolve, reject) => {
-    const target = new URL(url);
+    const target = new URL(options.url);
     const transport = target.protocol === 'https:' ? https : http;
 
     const request = transport.request(
@@ -93,9 +91,9 @@ function proxyRequest({ url, method, headers, body }) {
         hostname: target.hostname,
         port: target.port,
         path: `${target.pathname}${target.search}`,
-        method,
+        method: options.method,
         headers: {
-          ...headers,
+          ...options.headers,
           // Without an explicit length Node falls back to chunked encoding, and
           // quark's API answers a chunked POST with 400.
           ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
@@ -105,20 +103,17 @@ function proxyRequest({ url, method, headers, body }) {
         const chunks = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('end', () => {
-          const headerLines = [];
-          for (let index = 0; index < response.rawHeaders.length; index += 2) {
-            headerLines.push(`${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`);
-          }
+          const rawSetCookie = response.headers['set-cookie'];
+          const setCookie = Array.isArray(rawSetCookie)
+            ? rawSetCookie
+            : rawSetCookie ? [rawSetCookie] : [];
           resolve({
-            // A received response is a success for GM_xmlhttpRequest whatever the
-            // status; onerror is for network-level failure only. Routing a 4xx to
-            // onerror hides the body from the userscript and skips its own handling
-            // of API error codes such as quark's 23018.
-            ok: true,
-            status: response.statusCode ?? 0,
-            statusText: response.statusMessage ?? '',
-            text: Buffer.concat(chunks).toString('utf8'),
-            headers: headerLines.join('\r\n'),
+            statusCode: response.statusCode ?? 0,
+            statusMessage: response.statusMessage ?? '',
+            rawHeaders: response.rawHeaders ?? [],
+            headers: response.headers ?? {},
+            setCookie,
+            buffer: Buffer.concat(chunks),
           });
         });
       },
@@ -131,6 +126,198 @@ function proxyRequest({ url, method, headers, body }) {
   });
 }
 
+/**
+ * @param {string} headerStr
+ * @param {string} currentUrl
+ */
+function parseSetCookie(headerStr, currentUrl) {
+  const parts = headerStr.split(';').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  const first = parts[0];
+  const eqIdx = first.indexOf('=');
+  if (eqIdx === -1) return null;
+  const name = first.slice(0, eqIdx).trim();
+  const value = first.slice(eqIdx + 1).trim();
+
+  const details = {
+    url: currentUrl,
+    name,
+    value,
+    secure: false,
+    httpOnly: false,
+  };
+
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    const pEq = part.indexOf('=');
+    const attrName = (pEq === -1 ? part : part.slice(0, pEq)).trim().toLowerCase();
+    const attrVal = pEq === -1 ? '' : part.slice(pEq + 1).trim();
+
+    if (attrName === 'domain' && attrVal) {
+      details.domain = attrVal.replace(/^\./, '');
+    } else if (attrName === 'path' && attrVal) {
+      details.path = attrVal;
+    } else if (attrName === 'secure') {
+      details.secure = true;
+    } else if (attrName === 'httponly') {
+      details.httpOnly = true;
+    } else if (attrName === 'max-age' && attrVal) {
+      const maxAge = parseInt(attrVal, 10);
+      if (!Number.isNaN(maxAge)) {
+        details.expirationDate = Math.floor(Date.now() / 1000) + maxAge;
+      }
+    } else if (attrName === 'expires' && attrVal && details.expirationDate === undefined) {
+      const exp = Date.parse(attrVal);
+      if (!Number.isNaN(exp)) {
+        details.expirationDate = Math.floor(exp / 1000);
+      }
+    }
+  }
+
+  return details;
+}
+
+/**
+ * Node's fetch refuses to send forbidden header names such as Referer and
+ * Origin, and the netdisk APIs need both. Use the raw HTTP client instead.
+ *
+ * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null }} request
+ * @param {import('electron').Session} [ses]
+ * @returns {Promise<{ ok: boolean, status: number, statusText: string, text: string, headers: string, finalUrl: string }>}
+ */
+async function proxyRequest({ url, method, headers, body }, ses) {
+  const MAX_HOPS = 10;
+  let currentUrl = new URL(url);
+  let currentMethod = method;
+  let currentHeaders = { ...(headers ?? {}) };
+  let currentBody = body;
+
+  let callerCookie = null;
+  if (headers) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'cookie') {
+        callerCookie = headers[key];
+        break;
+      }
+    }
+  }
+
+  for (let hopCount = 0; hopCount < MAX_HOPS; hopCount++) {
+    const hopHeaders = { ...currentHeaders };
+
+    if (ses) {
+      for (const key of Object.keys(hopHeaders)) {
+        if (key.toLowerCase() === 'cookie') {
+          delete hopHeaders[key];
+        }
+      }
+
+      const jar = await ses.cookies.get({ url: currentUrl.href });
+      const cookieMap = new Map();
+      for (const cookie of jar) {
+        cookieMap.set(cookie.name, cookie.value);
+      }
+
+      if (callerCookie && typeof callerCookie === 'string') {
+        const parts = callerCookie.split(';');
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (!trimmed) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx !== -1) {
+            const name = trimmed.slice(0, eqIdx).trim();
+            const value = trimmed.slice(eqIdx + 1).trim();
+            cookieMap.set(name, value);
+          }
+        }
+      }
+
+      if (cookieMap.size > 0) {
+        const pairs = [];
+        for (const [name, val] of cookieMap.entries()) {
+          pairs.push(`${name}=${val}`);
+        }
+        hopHeaders['Cookie'] = pairs.join('; ');
+      }
+    }
+
+    const hopResult = await hop(
+      {
+        url: currentUrl.href,
+        method: currentMethod,
+        headers: hopHeaders,
+      },
+      currentBody,
+    );
+
+    if (ses && hopResult.setCookie.length > 0) {
+      for (const raw of hopResult.setCookie) {
+        try {
+          const details = parseSetCookie(raw, currentUrl.href);
+          if (details) {
+            await ses.cookies.set(details);
+          }
+        } catch {
+          // skip silently on failure
+        }
+      }
+    }
+
+    const statusCode = hopResult.statusCode;
+    const location = hopResult.headers['location'];
+
+    if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+      const locStr = Array.isArray(location) ? location[0] : location;
+      const next = new URL(locStr, currentUrl);
+
+      if (next.hash) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          text: '',
+          headers: '',
+          finalUrl: next.href,
+        };
+      }
+
+      if (hopCount === MAX_HOPS - 1) {
+        throw new Error('重定向过多');
+      }
+
+      if (statusCode === 301 || statusCode === 302 || statusCode === 303) {
+        currentMethod = 'GET';
+        currentBody = null;
+        for (const k of Object.keys(currentHeaders)) {
+          const lk = k.toLowerCase();
+          if (lk === 'content-length' || lk === 'content-type') {
+            delete currentHeaders[k];
+          }
+        }
+      }
+
+      currentUrl = next;
+      continue;
+    }
+
+    const headerLines = [];
+    for (let index = 0; index < hopResult.rawHeaders.length; index += 2) {
+      headerLines.push(`${hopResult.rawHeaders[index]}: ${hopResult.rawHeaders[index + 1]}`);
+    }
+
+    return {
+      ok: true,
+      status: hopResult.statusCode,
+      statusText: hopResult.statusMessage,
+      text: hopResult.buffer.toString('utf8'),
+      headers: headerLines.join('\r\n'),
+      finalUrl: currentUrl.href,
+    };
+  }
+
+  throw new Error('重定向过多');
+}
+
 class Job {
   /**
    * @param {{
@@ -138,14 +325,16 @@ class Job {
    *   deliver: (files: import('../shared/protocol').ExtractedFile[]) => Promise<void>,
    *   emit: (job: Job) => void,
    *   onDone: (contentsId: number) => void,
+   *   session?: import('electron').Session,
    * }} options
    */
-  constructor({ link, deliver, emit, onDone }) {
+  constructor({ link, deliver, emit, onDone, session }) {
     this.id = randomUUID();
     this.link = link;
     this.deliver = deliver;
     this.emit = emit;
     this.onDone = onDone;
+    this.session = session;
 
     /** @type {import('../shared/protocol').JobPhase} */
     this.state = { phase: 'loading' };
@@ -329,12 +518,15 @@ class Job {
     }
 
     try {
-      const response = await proxyRequest({
-        url: observation.url,
-        method: observation.method,
-        headers: observation.headers ?? {},
-        body: observation.body,
-      });
+      const response = await proxyRequest(
+        {
+          url: observation.url,
+          method: observation.method,
+          headers: observation.headers ?? {},
+          body: observation.body,
+        },
+        this.session,
+      );
       this.reply(observation.id, response);
     } catch (error) {
       this.reply(observation.id, {
@@ -475,6 +667,7 @@ class JobManager {
       deliver: (files) => this.deliver(files),
       emit: (updated) => this.emit(updated.snapshot()),
       onDone: (contentsId) => this.byContents.delete(contentsId),
+      session: session.fromPartition(this.partition),
     });
 
     this.jobs.set(job.id, job);

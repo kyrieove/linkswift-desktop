@@ -13,7 +13,8 @@
     "probe:aria2": "node tools/probe/probe-aria2.js",
     "probe:ui": "electron tools/probe/probe-ui.js",
     "probe:injection": "electron tools/probe/probe-injection.js",
-    "probe:throttle": "electron tools/probe/probe-throttle-control.js"
+    "probe:throttle": "electron tools/probe/probe-throttle-control.js",
+    "probe:proxy": "electron tools/probe/check-proxy.js"
   },
   "dependencies": {
     "@sweetalert2/theme-dark": "5.0.26",
