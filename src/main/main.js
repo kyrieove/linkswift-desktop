@@ -3,12 +3,12 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('node:path');
 
-const { INVOKE, PUSH } = require('../shared/protocol');
+const { PUSH } = require('../shared/protocol');
 const { Store } = require('./store');
 const { UserscriptSource } = require('./userscript');
 const { JobManager } = require('./job');
 const { loadVendor } = require('./vendor');
-const aria2 = require('./aria2');
+const { registerIpc } = require('./ipc');
 
 /**
  * One persistent partition holds every netdisk login. Electron puts it under
@@ -55,24 +55,6 @@ function pushJob(job) {
   if (uiWindow && !uiWindow.isDestroyed()) uiWindow.webContents.send(PUSH.jobEvent, job);
 }
 
-function registerIpc() {
-  ipcMain.handle(INVOKE.submit, (_event, rawLink) => jobs.submit(String(rawLink ?? '')));
-  ipcMain.handle(INVOKE.cancel, (_event, jobId) => jobs.cancel(String(jobId)));
-  ipcMain.handle(INVOKE.getSettings, () => jobs.store.getSettings());
-  ipcMain.handle(INVOKE.setSettings, (_event, settings) => jobs.store.setSettings(settings ?? {}));
-  ipcMain.handle(INVOKE.revealWindow, (_event, jobId) => jobs.reveal(String(jobId)));
-
-  ipcMain.handle(INVOKE.testAria2, async (_event, config) => {
-    const target = config ?? jobs.store.getSettings().aria2;
-    try {
-      const info = await aria2.getVersion(target);
-      return { ok: true, message: `连上了，aria2 ${info.version}` };
-    } catch (error) {
-      return { ok: false, message: error.message };
-    }
-  });
-}
-
 async function main() {
   const userDataDir = app.getPath('userData');
   const store = new Store(userDataDir);
@@ -104,7 +86,7 @@ async function main() {
     emit: pushJob,
   });
   jobs.register(ipcMain);
-  registerIpc();
+  registerIpc(ipcMain, jobs);
   createUiWindow();
 }
 

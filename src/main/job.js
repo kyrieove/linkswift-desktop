@@ -476,8 +476,9 @@ class JobManager {
   cancel(jobId) {
     const job = this.jobs.get(jobId);
     if (!job || job.settled) return;
-    job.settled = true;
-    job.close();
+    // Settle through fail so the renderer receives a terminal state. Closing the
+    // window alone would leave the row showing whatever phase it was in.
+    job.fail('cancelled', '任务已取消。');
   }
 
   /** @param {string} jobId */

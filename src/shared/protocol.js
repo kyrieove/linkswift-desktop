@@ -80,6 +80,10 @@ const INVOKE = {
 
 /**
  * Main to renderer, over webContents.send.
+ *
+ * `jobEvent` carries a whole `Job` as its only argument, never an envelope
+ * around one. Every phase change sends the full replacement, so the renderer
+ * keeps no state of its own beyond the list of jobs it has seen.
  */
 const PUSH = {
   jobEvent: 'linkswift:job:event',
