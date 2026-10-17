@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinkSwift 任务卡下载进度 UI 设计稿</title>
+    <style>
+      :root {
+        /* surfaces */
+        --bg: #f3f4f6;
+        --bg-raised: #ffffff;
+        --bg-sunken: #e9ebee;
+        --border: #d6d9de;
+        --border-strong: #b7bcc4;
+
+        /* text */
+        --text: #1a1c20;
+        --text-muted: #666d77;
+        --text-faint: #8a9098;
+
+        /* accent */
+        --accent: #2f6fed;
+        --accent-hover: #2a63d4;
+        --accent-active: #2455b8;
+        --accent-contrast: #ffffff;
+        --accent-soft: rgba(47, 111, 237, 0.12);
+        --focus: #2f6fed;
+
+        /* semantic tones */
+        --tone-busy: #2f6fed;
+        --tone-warn: #8a5a00;
+        --tone-ok: #16713b;
+        --tone-bad: #b52a23;
+        --warn-soft: rgba(138, 90, 0, 0.1);
+        --ok-soft: rgba(22, 113, 59, 0.12);
+        --danger-soft: rgba(181, 42, 35, 0.1);
+
+        --hover-overlay: rgba(20, 24, 30, 0.055);
+        --active-overlay: rgba(20, 24, 30, 0.095);
+
+        --shadow-1: 0 1px 2px rgba(16, 19, 24, 0.07), 0 1px 1px rgba(16, 19, 24, 0.04);
+
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+        --sp-5: 20px;
+        --sp-6: 24px;
+
+        --radius-sm: 4px;
+        --radius: 6px;
+        --radius-lg: 8px;
+
+        --dur-fast: 120ms;
+        --dur-base: 180ms;
+        --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+        --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.06);
+
+        --ui-font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+          "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+        --mono-font: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas,
+          "SFMono-Regular", "Microsoft YaHei Mono", monospace;
+
+        --chip-tone: var(--text-faint);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #1b1c1f;
+          --bg-raised: #242629;
+          --bg-sunken: #17181a;
+          --border: #34373c;
+          --border-strong: #464a51;
+
+          --text: #e7e9ec;
+          --text-muted: #a1a6ae;
+          --text-faint: #7d828a;
+
+          --accent: #6f9cf7;
+          --accent-hover: #86adf9;
+          --accent-active: #5c8ae8;
+          --accent-contrast: #10131a;
+          --accent-soft: rgba(111, 156, 247, 0.16);
+          --focus: #9ab8fb;
+
+          --tone-busy: #6f9cf7;
+          --tone-warn: #e0a33e;
+          --tone-ok: #56c98a;
+          --tone-bad: #f58a8a;
+          --warn-soft: rgba(224, 163, 62, 0.14);
+          --ok-soft: rgba(86, 201, 138, 0.14);
+          --danger-soft: rgba(245, 138, 138, 0.14);
+
+          --hover-overlay: rgba(255, 255, 255, 0.07);
+          --active-overlay: rgba(255, 255, 255, 0.11);
+
+          --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+      }
+
+      :root[data-theme="dark"] {
+        --bg: #1b1c1f;
+        --bg-raised: #242629;
+        --bg-sunken: #17181a;
+        --border: #34373c;
+        --border-strong: #464a51;
+
+        --text: #e7e9ec;
+        --text-muted: #a1a6ae;
+        --text-faint: #7d828a;
+
+        --accent: #6f9cf7;
+        --accent-hover: #86adf9;
+        --accent-active: #5c8ae8;
+        --accent-contrast: #10131a;
+        --accent-soft: rgba(111, 156, 247, 0.16);
+        --focus: #9ab8fb;
+
+        --tone-busy: #6f9cf7;
+        --tone-warn: #e0a33e;
+        --tone-ok: #56c98a;
+        --tone-bad: #f58a8a;
+        --warn-soft: rgba(224, 163, 62, 0.14);
+        --ok-soft: rgba(86, 201, 138, 0.14);
+        --danger-soft: rgba(245, 138, 138, 0.14);
+
+        --hover-overlay: rgba(255, 255, 255, 0.07);
+        --active-overlay: rgba(255, 255, 255, 0.11);
+
+        --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.5 var(--ui-font);
+        -webkit-font-smoothing: antialiased;
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      h1, h2, h3, p {
+        margin: 0;
+      }
+
+      ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      button {
+        font-family: inherit;
+      }
+
+      .mono {
+        font-family: var(--mono-font);
+        font-size: 0.95em;
+      }
+
+      /* ---------------- Header & Controls ---------------- */
+      .appbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        padding: var(--sp-2) var(--sp-4);
+        background: var(--bg-raised);
+        border-bottom: 1px solid var(--border);
+        box-shadow: var(--shadow-1);
+      }
+
+      .appbar__mark {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+
+      .appbar__title {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .appbar__sub {
+        font-size: 11px;
+        color: var(--text-faint);
+      }
+
+      .appbar__actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 26px;
+        padding: 0 var(--sp-2);
+        font: 600 11.5px/1 var(--ui-font);
+        color: var(--text);
+        background: var(--bg-raised);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background-color var(--dur-fast) var(--ease),
+          border-color var(--dur-fast) var(--ease);
+      }
+
+      .btn:hover {
+        background: var(--hover-overlay);
+      }
+
+      .btn:active {
+        background: var(--active-overlay);
+      }
+
+      .btn--primary {
+        color: var(--accent-contrast);
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .btn--primary:hover {
+        background: var(--accent-hover);
+      }
+
+      .btn--quiet {
+        color: var(--text-muted);
+        background: transparent;
+        border-color: transparent;
+      }
+
+      .btn--quiet:hover {
+        color: var(--text);
+        background: var(--hover-overlay);
+      }
+
+      .btn--sm {
+        height: 22px;
+        padding: 0 6px;
+        font-size: 11px;
+      }
+
+      /* ---------------- Container ---------------- */
+      .container {
+        width: 100%;
+        max-width: 680px;
+        margin: 0 auto;
+        padding: var(--sp-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-4);
+        transition: max-width var(--dur-base) var(--ease);
+      }
+
+      .container--narrow {
+        max-width: 420px;
+      }
+
+      .section-intro {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .section-intro__title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .section-intro__desc {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      /* ---------------- Job Cards ---------------- */
+      .job-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+      }
+
+      .job-item-wrapper {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .job-item-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .job {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        padding: var(--sp-3);
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: 0 1px 1px rgba(0,0,0,0.03);
+      }
+
+      .job__head {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+
+      .job__provider {
+        flex: none;
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+
+      .job__id {
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 45%;
+        padding: 1px 6px;
+        overflow: hidden;
+        font-family: var(--mono-font);
+        font-size: 12px;
+        color: var(--text-muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        background: var(--bg-sunken);
+        border-radius: var(--radius-sm);
+      }
+
+      .job__pwd {
+        flex: none;
+        font-family: var(--mono-font);
+        font-size: 11.5px;
+        color: var(--text-faint);
+      }
+
+      .job__head .chip {
+        margin-left: auto;
+      }
+
+      .job__body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+
+      .job__text {
+        font-size: 12.5px;
+        color: var(--text-muted);
+      }
+
+      .job__message {
+        font-size: 12.5px;
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      .job__code {
+        font-size: 11.5px;
+        color: var(--text-faint);
+      }
+
+      /* ---------------- Status Chip ---------------- */
+      .chip {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        gap: 6px;
+        height: 20px;
+        padding: 0 var(--sp-2);
+        font-size: 11px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+      }
+
+      .chip__dot {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        background: var(--chip-tone);
+        border-radius: 50%;
+      }
+
+      .chip[data-tone="busy"] {
+        --chip-tone: var(--tone-busy);
+        color: var(--text);
+      }
+
+      .chip[data-tone="busy"] .chip__dot {
+        animation: chip-pulse 1.6s var(--ease) infinite;
+      }
+
+      .chip[data-tone="warn"] {
+        --chip-tone: var(--tone-warn);
+        color: var(--tone-warn);
+        background: var(--warn-soft);
+        border-color: transparent;
+      }
+
+      .chip[data-tone="ok"] {
+        --chip-tone: var(--tone-ok);
+        color: var(--tone-ok);
+        background: var(--ok-soft);
+        border-color: transparent;
+      }
+
+      .chip[data-tone="bad"] {
+        --chip-tone: var(--tone-bad);
+        color: var(--tone-bad);
+        background: var(--danger-soft);
+        border-color: transparent;
+      }
+
+      @keyframes chip-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+
+      /* ---------------- Indeterminate Progress Bar (Phase 1) ---------------- */
+      .job__progress {
+        position: relative;
+        height: 3px;
+        overflow: hidden;
+        background: var(--bg-sunken);
+        border-radius: 2px;
+      }
+
+      .job__progress-bar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 35%;
+        background: var(--accent);
+        border-radius: 2px;
+        animation: progress-sweep 1.6s var(--ease) infinite;
+      }
+
+      @keyframes progress-sweep {
+        from { transform: translateX(-105%); }
+        to { transform: translateX(320%); }
+      }
+
+      /* ---------------- Download Progress Component (Phase 3) ---------------- */
+      .download-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: var(--sp-2) var(--sp-3);
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+
+      .download-card__row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: var(--sp-2);
+        min-width: 0;
+      }
+
+      .download-card__name {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 500;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .download-card__size {
+        flex: none;
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      /* Determinate Progress Track */
+      .track {
+        position: relative;
+        width: 100%;
+        height: 4px;
+        background: rgba(0, 0, 0, 0.08);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .track {
+          background: rgba(255, 255, 255, 0.1);
+        }
+      }
+      :root[data-theme="dark"] .track {
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .track__fill {
+        height: 100%;
+        background: var(--accent);
+        border-radius: 2px;
+        transition: width var(--dur-base) var(--ease);
+      }
+
+      .track__fill--ok {
+        background: var(--tone-ok);
+      }
+
+      .track__fill--bad {
+        background: var(--tone-bad);
+      }
+
+      /* Metrics Bar */
+      .download-card__metrics {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px var(--sp-3);
+        font-size: 11.5px;
+        color: var(--text-muted);
+        line-height: 1.4;
+      }
+
+      .metric {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+        white-space: nowrap;
+      }
+
+      .metric__pct {
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .metric__label {
+        font-size: 10.5px;
+        color: var(--text-faint);
+      }
+
+      .metric__val {
+        color: var(--text);
+      }
+
+      .metric-divider {
+        color: var(--border-strong);
+        user-select: none;
+      }
+
+      /* ---------------- File Details (for Done / Failed) ---------------- */
+      .detail {
+        border-top: 1px dashed var(--border);
+        padding-top: 6px;
+      }
+
+      .detail__summary {
+        width: max-content;
+        font-size: 11.5px;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: var(--radius-sm);
+      }
+
+      .detail__summary:hover {
+        color: var(--text);
+      }
+
+      .detail[open] .detail__summary {
+        margin-bottom: 6px;
+      }
+
+      .detail__pre {
+        max-height: 140px;
+        margin: 0;
+        padding: var(--sp-2);
+        overflow: auto;
+        font-family: var(--mono-font);
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: var(--bg-sunken);
+        border-radius: var(--radius-sm);
+      }
+
+      .files {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .file {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: var(--sp-2);
+        align-items: center;
+        padding: 6px var(--sp-2);
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+
+      .file__main {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .file__name {
+        font-size: 12.5px;
+        word-break: break-word;
+      }
+
+      .file__url {
+        overflow: hidden;
+        font-family: var(--mono-font);
+        font-size: 11px;
+        color: var(--text-faint);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ---------------- Responsive ---------------- */
+      @media (max-width: 520px) {
+        .job__id {
+          max-width: 32%;
+        }
+        .container {
+          padding: var(--sp-2);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="appbar">
+      <span class="appbar__mark" aria-hidden="true"></span>
+      <h1 class="appbar__title">LinkSwift</h1>
+      <span class="appbar__sub">下载进度 UI 设计稿</span>
+
+      <div class="appbar__actions">
+        <button id="toggle-width-btn" class="btn btn--quiet" type="button" title="切换容器宽度测试响应式">
+          切换窄屏 (420px)
+        </button>
+        <button id="toggle-theme-btn" class="btn btn--quiet" type="button" title="切换浅色/深色主题">
+          切换主题
+        </button>
+      </div>
+    </header>
+
+    <main class="container" id="main-container">
+      <div class="section-intro">
+        <h2 class="section-intro__title">任务卡 5 种状态设计对照</h2>
+        <p class="section-intro__desc">
+          数据源为 aria2.tellStatus 每秒轮询。卡片严格沿用既有 4px 栅格、色彩变量与字体层级。
+        </p>
+      </div>
+
+      <ul class="job-list">
+        <!-- 1. 提取中 -->
+        <li class="job-item-wrapper">
+          <span class="job-item-label">状态 1 · 提取中（后台驱动用户脚本）</span>
+          <div class="job">
+            <div class="job__head">
+              <span class="job__provider">夸克网盘</span>
+              <code class="job__id" title="ae8f001eadf6">ae8f001eadf6</code>
+              <span class="chip" data-tone="busy">
+                <span class="chip__dot"></span>
+                <span class="chip__label">提取中</span>
+              </span>
+              <button class="btn btn--sm btn--quiet" type="button">取消</button>
+            </div>
+            <div class="job__body">
+              <p class="job__text">正在驱动页面取直链…</p>
+              <div class="job__progress" role="progressbar" aria-label="提取中">
+                <div class="job__progress-bar"></div>
+              </div>
+            </div>
+          </div>
+        </li>
+
+        <!-- 2. 已推送等待中 -->
+        <li class="job-item-wrapper">
+          <span class="job-item-label">状态 2 · 等待中（已成功推入 aria2 RPC 队列）</span>
+          <div class="job">
+            <div class="job__head">
+              <span class="job__provider">夸克网盘</span>
+              <code class="job__id" title="ae8f001eadf6">ae8f001eadf6</code>
+              <span class="chip" data-tone="busy">
+                <span class="chip__dot"></span>
+                <span class="chip__label">等待中</span>
+              </span>
+              <button class="btn btn--sm btn--quiet" type="button">取消</button>
+            </div>
+            <div class="job__body">
+              <div class="download-card">
+                <div class="download-card__row">
+                  <span class="download-card__name" title="033-V6.3.97-R1-优化版.zip">033-V6.3.97-R1-优化版.zip</span>
+                  <span class="download-card__size mono">0.0 / 320.3 MiB</span>
+                </div>
+                <div class="track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                  <div class="track__fill" style="width: 0%"></div>
+                </div>
+                <div class="download-card__metrics">
+                  <span class="metric"><strong class="mono metric__pct">0.0%</strong></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">速度</span> <span class="mono metric__val">0 B/s</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">剩余</span> <span class="mono metric__val">--</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">连接</span> <span class="mono metric__val">0</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label" style="color:var(--text-muted)">已推送 aria2，排队等待…</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </li>
+
+        <!-- 3. 下载中 (动态模拟) -->
+        <li class="job-item-wrapper">
+          <span class="job-item-label">状态 3 · 下载中（JS 动态模拟每秒刷新）</span>
+          <div class="job">
+            <div class="job__head">
+              <span class="job__provider">夸克网盘</span>
+              <code class="job__id" title="ae8f001eadf6">ae8f001eadf6</code>
+              <span class="chip" data-tone="busy">
+                <span class="chip__dot"></span>
+                <span class="chip__label">下载中</span>
+              </span>
+              <button class="btn btn--sm btn--quiet" type="button">取消</button>
+            </div>
+            <div class="job__body">
+              <div class="download-card">
+                <div class="download-card__row">
+                  <span class="download-card__name" title="033-V6.3.97-R1-优化版.zip">033-V6.3.97-R1-优化版.zip</span>
+                  <span class="download-card__size mono" id="sim-size">120.4 / 320.3 MiB</span>
+                </div>
+                <div class="track" role="progressbar" id="sim-track" aria-valuenow="37.6" aria-valuemin="0" aria-valuemax="100">
+                  <div class="track__fill" id="sim-fill" style="width: 37.6%"></div>
+                </div>
+                <div class="download-card__metrics">
+                  <span class="metric"><strong class="mono metric__pct" id="sim-pct">37.6%</strong></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">速度</span> <span class="mono metric__val" id="sim-speed">8.6 MiB/s</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">剩余</span> <span class="mono metric__val" id="sim-eta">23 秒</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">连接</span> <span class="mono metric__val" id="sim-conn">16</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </li>
+
+        <!-- 4. 完成 -->
+        <li class="job-item-wrapper">
+          <span class="job-item-label">状态 4 · 完成（下载 100% 落盘）</span>
+          <div class="job">
+            <div class="job__head">
+              <span class="job__provider">夸克网盘</span>
+              <code class="job__id" title="ae8f001eadf6">ae8f001eadf6</code>
+              <span class="chip" data-tone="ok">
+                <span class="chip__dot"></span>
+                <span class="chip__label">已完成</span>
+              </span>
+            </div>
+            <div class="job__body">
+              <div class="download-card">
+                <div class="download-card__row">
+                  <span class="download-card__name" title="033-V6.3.97-R1-优化版.zip">033-V6.3.97-R1-优化版.zip</span>
+                  <span class="download-card__size mono">320.3 / 320.3 MiB</span>
+                </div>
+                <div class="track" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100">
+                  <div class="track__fill track__fill--ok" style="width: 100%"></div>
+                </div>
+                <div class="download-card__metrics">
+                  <span class="metric"><strong class="mono metric__pct" style="color:var(--tone-ok)">100%</strong></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">平均速度</span> <span class="mono metric__val">8.4 MiB/s</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label">耗时</span> <span class="mono metric__val">38 秒</span></span>
+                  <span class="metric-divider">·</span>
+                  <span class="metric"><span class="metric-label" style="color:var(--tone-ok)">下载完成，无 .aria2 残留</span></span>
+                </div>
+              </div>
+              <ul class="files">
+                <li class="file">
+                  <div class="file__main">
+                    <span class="file__name">033-V6.3.97-R1-优化版.zip</span>
+                    <code class="file__url" title="https://download.quark.cn/export/v2/download/...">https://download.quark.cn/export/v2/download/...</code>
+                  </div>
+                  <button class="btn btn--sm" type="button">复制链接</button>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </li>
+
+        <!-- 5. 失败 (412) -->
+        <li class="job-item-wrapper">
+          <span class="job-item-label">状态 5 · 失败（412 网盘拒绝 / Cookie 失效）</span>
+          <div class="job">
+            <div class="job__head">
+              <span class="job__provider">夸克网盘</span>
+              <code class="job__id" title="ae8f001eadf6">ae8f001eadf6</code>
+              <span class="chip" data-tone="bad">
+                <span class="chip__dot"></span>
+                <span class="chip__label">失败</span>
+              </span>
+            </div>
+            <div class="job__body">
+              <div class="download-card">
+                <div class="download-card__row">
+                  <span class="download-card__name" title="033-V6.3.97-R1-优化版.zip">033-V6.3.97-R1-优化版.zip</span>
+                  <span class="download-card__size mono">4.2 / 320.3 MiB</span>
+                </div>
+                <div class="track" role="progressbar" aria-valuenow="1.3" aria-valuemin="0" aria-valuemax="100">
+                  <div class="track__fill track__fill--bad" style="width: 1.3%"></div>
+                </div>
+              </div>
+
+              <p class="job__message" style="color:var(--tone-bad)">
+                412：网盘拒绝请求，可能是登录 Cookie 失效或链接已过期。
+              </p>
+              <p class="job__code">
+                aria2 错误码：<code class="mono">412 (errorCode: 12)</code>
+              </p>
+
+              <details class="detail">
+                <summary class="detail__summary">技术细节</summary>
+                <pre class="detail__pre">aria2 gid: 6b23a910f4c28109
+status: error
+errorCode: 12
+errorMessage: Error occurred while downloading from https://download.quark.cn/file/033-V6...
+HTTP Status: 412 Precondition Failed
+hint: header: Cookie missing or session invalid</pre>
+              </details>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </main>
+
+    <script>
+      // ---------------- 模拟 JS 动态刷新（状态 3） ----------------
+      (function initSimulator() {
+        const totalBytes = 320.3 * 1024 * 1024;
+        let downloadedBytes = 120.4 * 1024 * 1024;
+        const domSize = document.getElementById('sim-size');
+        const domFill = document.getElementById('sim-fill');
+        const domTrack = document.getElementById('sim-track');
+        const domPct = document.getElementById('sim-pct');
+        const domSpeed = document.getElementById('sim-speed');
+        const domEta = document.getElementById('sim-eta');
+        const domConn = document.getElementById('sim-conn');
+
+        function formatBytes(bytes) {
+          return (bytes / (1024 * 1024)).toFixed(1) + ' MiB';
+        }
+
+        function formatEta(seconds) {
+          if (!Number.isFinite(seconds) || seconds < 0) return '--';
+          if (seconds < 60) return Math.round(seconds) + ' 秒';
+          const mins = Math.floor(seconds / 60);
+          const secs = Math.round(seconds % 60);
+          return mins + ' 分 ' + (secs < 10 ? '0' : '') + secs + ' 秒';
+        }
+
+        setInterval(() => {
+          // 速度在 8.2 ~ 9.0 MiB/s 间微弱波动
+          const speedMiB = 8.2 + Math.random() * 0.8;
+          const bytesPerSec = speedMiB * 1024 * 1024;
+
+          downloadedBytes += bytesPerSec;
+          if (downloadedBytes >= totalBytes * 0.95) {
+            // 循环回滚方便持续演示
+            downloadedBytes = 110.0 * 1024 * 1024;
+          }
+
+          const pct = Math.min(100, (downloadedBytes / totalBytes) * 100);
+          const remainingBytes = Math.max(0, totalBytes - downloadedBytes);
+          const etaSec = remainingBytes / bytesPerSec;
+
+          domSize.textContent = formatBytes(downloadedBytes) + ' / ' + formatBytes(totalBytes);
+          domFill.style.width = pct.toFixed(1) + '%';
+          domTrack.setAttribute('aria-valuenow', pct.toFixed(1));
+          domPct.textContent = pct.toFixed(1) + '%';
+          domSpeed.textContent = speedMiB.toFixed(1) + ' MiB/s';
+          domEta.textContent = formatEta(etaSec);
+          // 连接数偶有 15-16 微动
+          domConn.textContent = Math.random() > 0.3 ? '16' : '15';
+        }, 1000);
+      })();
+
+      // ---------------- 控件交互 ----------------
+      const widthBtn = document.getElementById('toggle-width-btn');
+      const container = document.getElementById('main-container');
+      let isNarrow = false;
+      widthBtn.addEventListener('click', () => {
+        isNarrow = !isNarrow;
+        container.classList.toggle('container--narrow', isNarrow);
+        widthBtn.textContent = isNarrow ? '恢复宽屏 (680px)' : '切换窄屏 (420px)';
+      });
+
+      const themeBtn = document.getElementById('toggle-theme-btn');
+      let isDark = false;
+      themeBtn.addEventListener('click', () => {
+        isDark = !isDark;
+        document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      });
+    </script>
+  </body>
+</html>
