@@ -103,6 +103,11 @@ function buildAddUriOptions(file) {
       ) {
         options.split = '16';
         options['max-connection-per-server'] = '16';
+        // aria2 will not make a piece smaller than 20 MiB by default, so a 100 MiB
+        // file gets 5 connections instead of 16 and a 24 MiB file gets one.
+        // Measured on a quark link: 1 connection 1.3 MiB/s, 4 connections
+        // 3.6 MiB/s, 16 connections 4.3 MiB/s.
+        options['min-split-size'] = '1M';
       }
       if (!options.referer) options.referer = parsedUrl.origin + '/';
     } catch {

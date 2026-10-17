@@ -52,6 +52,17 @@ const { buildAddUriOptions } = require('../src/main/aria2');
   );
 }
 
+// 3b. 分片下限 1M，否则 20M 的默认值让小文件只开一条连接
+{
+  const file = {
+    name: 'small.zip',
+    url: 'https://dl-c-sz-u.drive.quark.cn/file/small.zip',
+    headers: {},
+  };
+  const options = buildAddUriOptions(file);
+  assert.strictEqual(options['min-split-size'], '1M', '网盘直链 min-split-size 应为 1M');
+}
+
 // 4. UA、Referer 被正确转发
 {
   const file = {
