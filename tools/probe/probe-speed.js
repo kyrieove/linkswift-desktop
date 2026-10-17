@@ -71,15 +71,26 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const samples = [];
   const keys = ['status', 'completedLength', 'totalLength', 'downloadSpeed', 'connections', 'errorCode'];
 
+  // Wall clock as this probe sees it, so the summary can separate "what aria2
+  // reports" from "bytes that actually landed per real second".
+  let lastDone = 0;
+  let lastWall = Date.now();
+
   for (let tick = 0; tick < seconds; tick += 1) {
     await sleep(1000);
     const status = await rpc('aria2.tellStatus', [gid, keys]);
+    const now = Date.now();
+    const done = Number(status.completedLength);
+    const real = Math.round((done - lastDone) / ((now - lastWall) / 1000));
+    lastDone = done;
+    lastWall = now;
     samples.push({
       tick,
       status: status.status,
-      done: Number(status.completedLength),
+      done,
       total: Number(status.totalLength),
       speed: Number(status.downloadSpeed),
+      real,
       conns: Number(status.connections),
       error: status.errorCode || null,
     });
@@ -90,6 +101,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const final = samples[samples.length - 1] || { done: 0, conns: 0, speed: 0 };
   const steady = samples.filter((s) => s.tick >= 3 && s.status === 'active');
   const avg = steady.length > 0 ? Math.round(steady.reduce((sum, s) => sum + s.speed, 0) / steady.length) : 0;
+  const avgReal = steady.length > 0 ? Math.round(steady.reduce((sum, s) => sum + s.real, 0) / steady.length) : 0;
   const peak = samples.reduce((max, s) => Math.max(max, s.speed), 0);
   // Cookie values are live credentials; the summary is meant to be pasted around.
   const shown = {
@@ -106,6 +118,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         connections: Math.max(...samples.map((s) => s.conns), 0),
         peakKiBps: Math.round(peak / 1024),
         steadyKiBps: Math.round(avg / 1024),
+        steadyRealKiBps: Math.round(avgReal / 1024),
         downloadedMiB: Number((final.done / 1048576).toFixed(2)),
         status: final.status || final.status,
       }),

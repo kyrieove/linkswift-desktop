@@ -172,6 +172,11 @@
   - 百度同一账号/IP：1 连接 127 KiB/s，16 连接 132 KiB/s，两条任务同时跑合计 110 KiB/s → 服务端按账号封顶约 130 KiB/s，加连接数无用。OpenSpeedy 是游戏变速器（Hook `Sleep`/`GetTickCount`/`QueryPerformanceCounter` 等时间函数），作用于进程本地，改不了服务端封顶，对本项目的 aria2 直链无效。
   - 夸克同一文件：1 连接 1.3 MiB/s，4 连接 3.6 MiB/s，16 连接 4.3 MiB/s。
   - `src/main/aria2.js` 补 `min-split-size=1M`：aria2 默认分片下限 20M，189.6 MiB 的夸克文件只开到 8 连接（3.1 MiB/s），加上后 16 连接（4.3 MiB/s）；24 MiB 的百度文件从 1 连接变 16 连接。
+- **OpenSpeedy 思路实测（2026-10-18）**：把 OpenSpeedy 3.3.10 的 `speedpatch64.dll` 注入 aria2c（`bridge_inject` + `bridge_set_speed`，经 WebView2 CDP 调 Tauri 命令），同一百度直链、16 连接，`probe-speed.js` 同时记 aria2 自报速度和落盘实测速度：
+  - 1×：自报 216–229 KiB/s，落盘 162–201 KiB/s
+  - 10×：自报 24 KiB/s（按被加速的时钟算，只剩真实值的约 1/10），落盘 171 KiB/s，不变
+  - 100×：自报 0，落盘 34 KiB/s，定时器被打乱反而更慢
+  - 结论：时钟加速只改进程内部的数字，改不了服务端按账号放行的字节，对百度直链没有提速空间。测试期间百度自身也在抖动（同一 1× 从 201 掉到 28，冷却 60 秒回到 171），故只采信最早那组干净对照。测完已卸 hook 并重启 aria2c。
 
 ### 未完成事项（后续版本规划）
 
