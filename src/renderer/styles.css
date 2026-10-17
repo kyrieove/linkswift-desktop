@@ -757,6 +757,13 @@ input {
   color: var(--text-faint);
 }
 
+.job__hint {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
 .job__progress {
   position: relative;
   height: 2px;

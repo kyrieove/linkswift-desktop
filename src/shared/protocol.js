@@ -13,7 +13,7 @@
  * @typedef {'quark' | 'baidu'} ProviderId
  * @typedef {'aria2' | 'clipboard' | 'browser'} DeliveryTarget
  * @typedef {'login' | 'passcode' | 'captcha' | 'unknown-page'} HumanReason
- * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found'} FailureCode
+ * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found' | 'link-invalid' | 'file-missing' | 'passcode-wrong' | 'needs-transfer' | 'rate-limited' | 'extract-failed'} FailureCode
  */
 
 /**
@@ -30,6 +30,7 @@
  * @property {DeliveryTarget} delivery
  * @property {Aria2Config} aria2
  * @property {boolean} allowTransfer  Lets the baidu flow write into the user's drive
+ * @property {boolean} autoSubmit     提交前不再等一次点击：粘贴到分享文案就开跑
  */
 
 /**

@@ -32,12 +32,48 @@ const INIT_LICENSE = 'AGPL3';
  */
 const DIALOG_OUTCOMES = [
   [
+    /分享(的文件)?已?经?被?(取消|删除|屏蔽)|链接(已)?失效|来晚了/,
+    { fail: 'link-invalid', message: '分享已失效：文件被取消、删除，或链接不完整。' },
+  ],
+  [
     /请先勾选|请打开文件夹/,
     { fail: 'no-files', message: '没能在页面上勾选到文件。分享页结构可能变了。' },
   ],
   [/请先登录|需要登录|超出游客|31001/, { human: 'login' }],
   [/提取码|请输入密码/, { human: 'passcode' }],
   [/验证码|安全验证/, { human: 'captcha' }],
+];
+
+/**
+ * What the share page itself says when a driver step finds no button. The page
+ * knows why the file is not there, so its words beat guessing "upstream changed".
+ *
+ * @type {Array<[RegExp, { code: import('../shared/protocol').FailureCode, message: string }]>}
+ */
+const PAGE_OUTCOMES = [
+  [
+    /分享.*(取消|失效|删除|过期)|链接.*(失效|不存在|错误|无效)|来晚了|页面不存在/i,
+    { code: 'link-invalid', message: '分享已失效：文件被取消、删除，或链接不完整。' },
+  ],
+  [
+    /文件.*(不存在|已删除|已被删除)|内容.*(违规|屏蔽)/,
+    { code: 'file-missing', message: '文件不存在，可能已被分享者删除或屏蔽。' },
+  ],
+  [
+    /提取码(错误|不正确)|密码(错误|不正确)/,
+    { code: 'passcode-wrong', message: '提取码不对，请检查后重新粘贴。' },
+  ],
+  [
+    /超过\s*50\s*(M|MB|兆)|文件(过大|太大)|需(要|先)[^。]{0,12}转存|请[^。]{0,12}保存到网盘/,
+    {
+      code: 'needs-transfer',
+      message: '这个文件超过 50MB，需要先转存到你自己的网盘。设置里勾选「允许自动转存」后重试。',
+    },
+  ],
+  [
+    /访问.*频繁|操作.*频繁|请稍后|限流/,
+    { code: 'rate-limited', message: '百度暂时限流了这个账号，等几分钟再试。' },
+  ],
 ];
 
 /**
@@ -565,7 +601,10 @@ class Job {
         if (DEBUG) console.log(`[DBG job ${this.id}] ignored late navigation failure: ${error.message}`);
         return;
       }
-      this.fail('network', `加载分享页失败：${error.message}`);
+      // An empty message with a bare Chromium code reads like a crash; say what
+      // is known and leave the code for the diagnosis block.
+      const reason = error.message || `浏览器加载失败（错误码 ${error.code ?? '未知'}）`;
+      this.fail('network', `加载分享页失败：${reason}。网络正常时，多半是这个分享链接不完整。`);
     }
   }
 
@@ -594,13 +633,7 @@ class Job {
       }
 
       case 'driver-result':
-        if (!observation.ok) {
-          this.fail(
-            'upstream-redesigned',
-            `页面上没找到该点的东西，上游可能改版了（第 ${observation.step + 1} 步：${observation.verb}）`,
-            observation.selector ? `选择器：${observation.selector}\n${observation.detail}` : observation.detail,
-          );
-        }
+        if (!observation.ok) this.failDriver(observation);
         return;
 
       case 'http':
@@ -618,6 +651,63 @@ class Job {
       default:
         return;
     }
+  }
+
+  /**
+   * A failed step only means a button was not there. Read the page and let its
+   * own words pick the failure, instead of blaming the upstream script for every
+   * miss, which is what made a broken share link look like a redesign.
+   *
+   * @param {any} observation
+   */
+  async failDriver(observation) {
+    const step = `第 ${observation.step + 1} 步：${observation.verb}`;
+    let pageText = '';
+    try {
+      const win = this.window;
+      if (win && !win.isDestroyed()) {
+        pageText = String(
+          await win.webContents.executeJavaScript('document.body ? document.body.innerText : ""'),
+        );
+      }
+    } catch {
+      // A closed window has no page to read; the selector detail still ships.
+    }
+
+    const excerpt = pageText.replace(/\s+/g, ' ').trim().slice(0, 400);
+    if (/请先登录|需要登录|登录后/.test(excerpt)) {
+      this.needsHuman('login');
+      return;
+    }
+    if (/安全验证|验证码|滑块/.test(excerpt)) {
+      this.needsHuman('captcha');
+      return;
+    }
+
+    const detail = [
+      observation.selector ? `选择器：${observation.selector}` : '',
+      observation.detail || '',
+      `页面文字：${excerpt || '读不到'}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const outcome = PAGE_OUTCOMES.find(([pattern]) => pattern.test(excerpt))?.[1];
+    if (outcome) {
+      this.fail(outcome.code, `${outcome.message}（${step}）`, detail);
+      return;
+    }
+    // The file list and the script's own buttons are on screen, so the page is
+    // fine; it was the link fetch behind the dialog that came back empty.
+    if (/下载助手|Aria2 下载|保存到网盘/.test(excerpt)) {
+      this.fail(
+        'extract-failed',
+        `页面正常打开了，但脚本没弹出取链结果，通常是网盘接口临时拒绝；点「打开窗口」看看，或稍后重试（${step}）`,
+        detail,
+      );
+      return;
+    }
+    this.fail('upstream-redesigned', `页面上没找到该点的东西，上游可能改版了（${step}）`, detail);
   }
 
   /**

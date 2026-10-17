@@ -64,6 +64,12 @@
     cancelled: '已取消',
     'no-files': '没取到文件',
     'chrome-not-found': '未找到 Chrome',
+    'link-invalid': '分享已失效',
+    'file-missing': '文件不存在',
+    'passcode-wrong': '提取码不对',
+    'needs-transfer': '需要先转存',
+    'rate-limited': '账号被限流',
+    'extract-failed': '取链没弹出',
   };
 
   // Only the host knows the full link grammar; this is just enough to decide
@@ -88,6 +94,7 @@
     aria2Dir: document.getElementById('aria2-dir'),
     showToken: document.getElementById('show-token'),
     allowTransfer: document.getElementById('allow-transfer'),
+    autoSubmit: document.getElementById('auto-submit'),
     saveSettings: document.getElementById('save-settings'),
     testAria2: document.getElementById('test-aria2'),
     browseAria2Dir: document.getElementById('browse-aria2-dir'),
@@ -114,6 +121,7 @@
   let saving = false;
   let testing = false;
   let clipboardProbeTimer = 0;
+  let autoSubmit = false;
 
   /* ------------------------------------------------------------- helpers --- */
 
@@ -196,8 +204,23 @@
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Permission can be denied outright; the link stays on screen to copy by hand.
-      return false;
+      // A file:// page without focus is refused the async API, so fall back to
+      // the selection-based copy before telling the user it did not work.
+      try {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.top = '-1000px';
+        area.style.opacity = '0';
+        document.body.append(area);
+        area.select();
+        const ok = document.execCommand('copy');
+        area.remove();
+        return ok;
+      } catch {
+        return false;
+      }
     }
   }
 
@@ -393,6 +416,50 @@
     return row ? row.querySelector('.job__note') : dom.composerError;
   }
 
+  function diagnosisText(job) {
+    const state = job.state || {};
+    const link = job.link || {};
+    return [
+      'LinkSwift 诊断信息',
+      '时间: ' + new Date().toISOString(),
+      '任务: ' + job.id,
+      '网盘: ' + (link.provider || '?') + ' / ' + (link.shareId || '?'),
+      '提取码: ' + (link.passcode || '无'),
+      '阶段: ' + (state.phase || '?'),
+      '错误: ' + (state.code || '无') + ' ' + (state.message || ''),
+      '',
+      String(state.detail || '（没有技术细节）'),
+    ].join('\n');
+  }
+
+  function diagnosisButton(job) {
+    const btn = el('button', 'btn btn--sm btn--quiet', '复制诊断信息');
+    btn.type = 'button';
+    btn.dataset.focusKey = 'diagnosis:' + job.id;
+    btn.addEventListener('click', async () => {
+      const ok = await writeClipboard(diagnosisText(job));
+      setNote(
+        rowNote(btn),
+        ok ? '诊断信息已复制。' : '复制失败，请展开技术细节手动复制。',
+        ok ? 'ok' : 'error'
+      );
+    });
+    return btn;
+  }
+
+  /**
+   * The cap is on the account, not on the downloader. Say it in the card so a
+   * slow baidu job reads as "this is the ceiling" instead of "the app broke".
+   */
+  function accountSpeedHint(job) {
+    if (!job.link || job.link.provider !== 'baidu') return null;
+    return el(
+      'p',
+      'job__hint',
+      '百度按账号限速：免费账号实测 130 到 230 KiB/s，会员账号另有档位。同一个文件在夸克能到 4 MiB/s 级。'
+    );
+  }
+
   function jobBody(job) {
     const state = job.state || {};
     const body = el('div', 'job__body');
@@ -413,6 +480,8 @@
       } else {
         list.forEach((p) => body.append(downloadCard(p)));
       }
+      const hint = accountSpeedHint(job);
+      if (hint) body.append(hint);
     } else if (state.phase === 'needs-human') {
       const reason = HUMAN_REASONS[state.reason];
       body.append(
@@ -454,6 +523,8 @@
         files.forEach((file, index) => list.append(fileRow(file, job.id, index)));
         body.append(list);
       }
+      const doneHint = accountSpeedHint(job);
+      if (doneHint) body.append(doneHint);
     } else if (state.phase === 'failed') {
       if (Array.isArray(state.progress) && state.progress.length) {
         state.progress.forEach((p) => body.append(downloadCard(p)));
@@ -471,6 +542,9 @@
         details.append(el('pre', 'detail__pre', String(state.detail)));
         body.append(details);
       }
+      const actions = el('div', 'job__actions');
+      actions.append(diagnosisButton(job));
+      body.append(actions);
     }
 
     if (state.phase === 'loading' || state.phase === 'extracting' || state.phase === 'delivering') {
@@ -628,6 +702,18 @@
     setNote(dom.composerError, '');
     setNote(dom.composerStatus, '');
     dom.input.focus();
+    if (autoSubmit) submitLink();
+  }
+
+  /**
+   * A paste is already an intent to submit, so the setting can skip the button.
+   * The value lands after the event, hence the deferral.
+   */
+  function maybeAutoSubmitAfterPaste() {
+    if (!autoSubmit) return;
+    setTimeout(() => {
+      if (dom.input.value.trim()) submitLink();
+    }, 0);
   }
 
   /**
@@ -684,6 +770,8 @@
     setInputValue(dom.aria2Token, aria2.token);
     setInputValue(dom.aria2Dir, aria2.dir);
     dom.allowTransfer.checked = Boolean(settings.allowTransfer);
+    autoSubmit = Boolean(settings.autoSubmit);
+    if (dom.autoSubmit) dom.autoSubmit.checked = autoSubmit;
   }
 
   async function loadSettings() {
@@ -706,6 +794,7 @@
         dir: dom.aria2Dir.value.trim(),
       },
       allowTransfer: dom.allowTransfer.checked,
+      autoSubmit: dom.autoSubmit ? dom.autoSubmit.checked : false,
     };
   }
 
@@ -775,6 +864,7 @@
   });
 
   dom.pasteBtn.addEventListener('click', pasteFromClipboard);
+  dom.input.addEventListener('paste', maybeAutoSubmitAfterPaste);
 
   for (const radio of deliveryRadios) {
     radio.addEventListener('change', reflectDelivery);

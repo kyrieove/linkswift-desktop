@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
     dir: '',
   },
   allowTransfer: false,
+  autoSubmit: false,
 };
 
 /**
