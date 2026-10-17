@@ -558,6 +558,13 @@ class Job {
       // failure is worth failing on; everything else is caught by the driver's
       // wait-for timeout, which reports the real symptom.
       if (error.code === 'ERR_ABORTED' || /ERR_ABORTED/.test(error.message)) return;
+      // Accepting a job destroys its window while that navigation is still
+      // pending, and the rejection lands as ERR_FAILED on a download that is
+      // already running. Only a job still waiting for its page can fail here.
+      if (this.state.phase !== 'loading' || !this.window || this.window.isDestroyed()) {
+        if (DEBUG) console.log(`[DBG job ${this.id}] ignored late navigation failure: ${error.message}`);
+        return;
+      }
       this.fail('network', `加载分享页失败：${error.message}`);
     }
   }
