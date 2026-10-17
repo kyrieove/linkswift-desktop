@@ -10,6 +10,9 @@ const { INTERNAL } = require('../shared/protocol');
 const { getProvider, parseShareLink } = require('../shared/providers');
 const aria2 = require('./aria2');
 
+const DEBUG = process.env.LINKSWIFT_DEBUG === '1';
+if (DEBUG) console.log('[DBG] LINKSWIFT_DEBUG enabled');
+
 /**
  * The userscript gates its own setup on these two literals (source lines 220-221,
  * checked at 8306). Seeding them skips the "点我点亮" button entirely, and with it
@@ -447,6 +450,9 @@ class Job {
 
   /** @param {any} observation */
   handle(observation) {
+    if (DEBUG) {
+      console.log(`[DBG job ${this.id}] observation:`, observation);
+    }
     if (this.settled) return;
 
     switch (observation.kind) {
@@ -527,8 +533,15 @@ class Job {
         },
         this.session,
       );
+      if (DEBUG) {
+        const preview = typeof response?.text === 'string' ? response.text.slice(0, 300) : '';
+        console.log(`[DBG job ${this.id}] proxy ${observation.method} ${observation.url} -> ${response.status} ${preview}`);
+      }
       this.reply(observation.id, response);
     } catch (error) {
+      if (DEBUG) {
+        console.log(`[DBG job ${this.id}] proxy ${observation.method} ${observation.url} -> error: ${error.message}`);
+      }
       this.reply(observation.id, {
         ok: false,
         status: null,
