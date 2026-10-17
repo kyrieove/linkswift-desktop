@@ -26,6 +26,7 @@
  * @property {(url: URL) => boolean} matches
  * @property {(url: URL) => string | null} parseShareId
  * @property {string} pageAnchor  Where the userscript injects its own button
+ * @property {string | null} passcodeParam  Query parameter that unlocks the share, if any
  * @property {Step[]} steps
  */
 
@@ -118,6 +119,7 @@ const PROVIDERS = {
     matches: (url) => /(^|\.)quark\.cn$/.test(url.hostname),
     parseShareId: (url) => url.pathname.match(/^\/(?:s|share)\/([A-Za-z0-9]+)/)?.[1] ?? null,
     pageAnchor: '.share-btns',
+    passcodeParam: null,
     steps: QUARK_STEPS,
   },
   baidu: {
@@ -127,21 +129,52 @@ const PROVIDERS = {
     parseShareId: (url) =>
       url.pathname.match(/^\/s\/1?([A-Za-z0-9_-]+)/)?.[1] ?? url.searchParams.get('surl') ?? null,
     pageAnchor: '.module-share-top-bar .x-button-box .g-dropdown-button.tools-more',
+    // A share page unlocks itself from ?pwd=, which is how a code gets past the
+    // code screen without the driver having to click its submit button.
+    passcodeParam: 'pwd',
     steps: BAIDU_STEPS,
   },
 };
 
 /**
+ * What Baidu and Quark copy to the clipboard is a sentence, and a single-line
+ * input strips its newlines, so the URL arrives glued to the words around it.
+ * Take the URL out by RFC 3986's own character set: it stops at the first
+ * Chinese character, and at the space that follows "链接:".
+ */
+const URL_CHARS = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/;
+const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
+/** Baidu writes "提取码: c81v", Quark "提取码：c81v". */
+const PASSCODE_LABEL = /(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s*([A-Za-z0-9]{4,12})/i;
+
+/**
+ * @param {string} text
+ * @returns {string | null}
+ */
+function extractShareUrl(text) {
+  const start = text.search(/https?:\/\//i);
+  if (start < 0) return null;
+
+  let end = start;
+  while (end < text.length && URL_CHARS.test(text[end])) end += 1;
+  return text.slice(start, end).replace(TRAILING_PUNCTUATION, '');
+}
+
+/**
  * Parse a pasted share link at the boundary. Anything unrecognised returns null
  * rather than a half-filled object.
  *
- * @param {string} raw
+ * @param {string} raw  A bare link, or the whole share text netdisks copy
  * @returns {import('./protocol').ShareLink | null}
  */
 function parseShareLink(raw) {
+  const text = String(raw ?? '');
+  const candidate = extractShareUrl(text);
+  if (!candidate) return null;
+
   let url;
   try {
-    url = new URL(raw.trim());
+    url = new URL(candidate);
   } catch {
     return null;
   }
@@ -152,11 +185,16 @@ function parseShareLink(raw) {
   const shareId = provider.parseShareId(url);
   if (!shareId) return null;
 
+  const passcode = url.searchParams.get('pwd') || PASSCODE_LABEL.exec(text)?.[1] || null;
+  if (passcode && provider.passcodeParam) {
+    url.searchParams.set(provider.passcodeParam, passcode);
+  }
+
   return {
-    raw: raw.trim(),
+    raw: url.href,
     provider: provider.id,
     shareId,
-    passcode: url.searchParams.get('pwd') || null,
+    passcode,
   };
 }
 

@@ -583,11 +583,6 @@
       dom.input.focus();
       return;
     }
-    if (!/^https?:\/\//i.test(raw)) {
-      setNote(dom.composerError, '链接需要以 http:// 或 https:// 开头。');
-      dom.input.focus();
-      return;
-    }
 
     submitting = true;
     dom.submitBtn.setAttribute('aria-busy', 'true');
@@ -627,8 +622,9 @@
       return;
     }
 
-    const match = text.match(SHARE_LINK_RE);
-    dom.input.value = (match ? match[0] : text).trim();
+    // The host reads the link and the passcode out of the text, so hand it the
+    // whole clipboard rather than a fragment that would drop the passcode.
+    dom.input.value = text.trim();
     setNote(dom.composerError, '');
     setNote(dom.composerStatus, '');
     dom.input.focus();
