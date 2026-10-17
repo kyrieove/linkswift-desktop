@@ -198,7 +198,7 @@ async function runStep(step, passcode) {
       return;
 
     case 'ensure-anchor': {
-      await waitFor(step.ancestor, 15000);
+      await waitFor(step.ancestor, step.timeoutMs ?? 30000);
       const outcome = await runInPage(`(() => {
         const anchor = document.querySelector(${JSON.stringify(step.ancestor)});
         if (!anchor) return { ok: false, reason: 'anchor not found' };

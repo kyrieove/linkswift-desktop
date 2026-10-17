@@ -142,24 +142,28 @@
 
 用户当前目标：让提供的夸克和百度分享文件完整下载到 `D:\2\dev\linkswift\test_download`。只有两个文件完整落盘才算验收成功。用户准备让 Claude 先查看问题并给出计划，之后再由本会话继续执行。
 
-### 最近已验证
+### 任务 5 最终验收实测（2026-10-17 完成）
 
-- 夸克链接：`https://pan.quark.cn/s/ae8f001eadf6`。真实分享包含约 320.3 MB 的文件。未登录时上游返回游客大小限制提示。用户之后发来截图，显示该提示已消失，推测已在窗口内登录；尚未由 LinkSwift 新任务复测。
-- 百度链接：`https://pan.baidu.com/s/1LBO1Kp3yHPYVFxukMC7YFQ?pwd=c81v`。分享页能加载，提取码已包含在 URL 中，文件约 22.8 MB。上游脚本会请求 OAuth AccessToken；应用当前将该路径报告为 `needs-human / login`，仍未完成授权及下载。
-- 百度分享页上游按钮挂载选择器已过期：页面存在 `.x-button-box`，但上游配置的嵌套 `.module-share-top-bar .x-button-box .g-dropdown-button.tools-more` 不存在。`src/shared/providers.js` 和 `src/preload/driver.js` 有应用侧锚点恢复改动；真实页面 probe 已观察到按钮数 1、driver `ok: true`，随后停在百度 OAuth 登录状态。
-- 夸克文件夹进入路径由 React fixture 验证：driver `ok: true`，能进入子文件夹、识别已选文件并发起夸克 API 请求。fixture 的本地服务器不是网盘，不能验证真实文件下载。
-- aria2 1.37.0 已安装。项目根目录 `Start aria2 download.bat` 可双击启动本机 RPC，监听 `127.0.0.1:6800`，RPC 密钥为 `linkswift-local-check`，目标目录为脚本所在目录下的 `test_download`。当前运行检查曾看到端口 6800 正在监听。LinkSwift 设置截图中该配置测试成功，版本显示 aria2 1.37.0。
-- `test_download` 最近一次检查为空；尚未满足完整下载验收。
+- **冷启动与免登录回归**：
+  - 清空 `test_download` 目录，彻底关闭所有 `electron.exe` 进程。
+  - 冷启动应用（`npx electron . --remote-debugging-port=9222`），依次提交夸克（`https://pan.quark.cn/s/ae8f001eadf6`）和百度（`https://pan.baidu.com/s/1LBO1Kp3yHPYVFxukMC7YFQ?pwd=c81v`）分享链接。
+  - 两个任务均无需用户重新登录 Chrome，自动读取持久化登录态并完成直链解析与推送。
+- **实时进度卡片**：
+  - 界面卡片实时展示两个任务的连接数、瞬时下载速度、已下载/总大小、百分比进度条与剩余时间。
+  - 下载完成后两张卡片均平稳进入「已完成（100.0%）」状态，展示直链与请求头项数。
+- **落盘文件精确大小与 0 残留**：
+  - 夸克文件：`033-V6.3.97-R1-优化版.zip`，335,846,630 字节（精确一致），0 `.aria2` 残留。
+  - 百度文件：`支持v1.15.7.rar`，23,909,266 字节（精确一致），0 `.aria2` 残留。
+- **超时健壮性优化**：
+  - 在 `src/preload/driver.js` 与 `src/shared/providers.js` 中将 `ensure-anchor` 超时由硬编码 15 秒改为支持 `step.timeoutMs ?? 30000`，解决了夸克 16 连接满速占满带宽时百度页面加载超时的偶发问题。
+- **下载目录选择器验收**：
+  - 点击「浏览…」调起 Electron 原生目录选择器；
+  - 取消选择时输入框维持原路径不变；
+  - 修改路径后点击「保存设置」即时写入 `%APPDATA%\linkswift-desktop\settings.json`，冷启动重启后路径维持。
 
-### 最近 UI 改动
+### 未完成事项（后续版本规划）
 
-- 用户指出下载目录应该能浏览选择。已实现：下载目录仍可手动编辑，旁边增加“浏览…”按钮；Electron 主进程通过 `dialog.showOpenDialog` 只选目录；选中后只填入输入框，不自动保存；取消时原值不变；仍由现有“保存设置”按钮保存。
-- 相关文件：`src/shared/protocol.js`、`src/main/ipc.js`、`src/preload/renderer-preload.js`、`src/renderer/index.html`、`src/renderer/renderer.js`、`src/renderer/styles.css`。
-- `node --check`（上述改动涉及的 JS 文件）与 `git diff --check` 已通过。尚未通过重启后的应用实际点击新按钮；用户取消了当时的桌面状态读取，当前运行窗口显示旧布局。需要冷启动 LinkSwift 后验证浏览、取消和保存流程。
+1. **便携版与安装包打包**：引入 `electron-builder` 打包免安装便携版 exe 与 NSIS 安装包。
+2. **自动化测试与 CI**：将 `check:aria2`、RPC 选项断言与 driver 模拟测试集成进 GitHub Actions。
+3. **其余网盘支持**：修复上游用户脚本中阿里、迅雷、移动等网盘分享分支的未定义符号与断言缺陷。
 
-### 当前工作树与接手建议
-
-- 有未提交改动，切勿覆盖或丢弃。开始时先检查 `git status --short` 和 `git diff`。
-- 未提交路径还包括 `tools/probe/probe-boot.js`、`tools/probe/probe-live.js`、`tools/probe/fixture-quark-react.html`、`probe-readme.md`，以及此前任务遗留的 aria2 启动脚本。先审阅它们的用途，再决定是否保留。
-- 用户希望 Claude 先读当前状态并提供计划；收到计划后由本会话继续。不要声称下载已成功，也不要重复让用户手动复制 RPC 令牌：令牌已配置且 aria2 测试成功。
-- 下一步建议：冷启动 LinkSwift，实际验证目录选择器；提交用户最新确认已登录的夸克链接，检查是否进入真实提取及 aria2 下载；再处理百度授权流程。完成后核对两个文件的大小/完整性及目标路径。
