@@ -74,30 +74,51 @@ async function getVersion(config) {
 }
 
 /**
+ * Builds the aria2 options object for a file download.
+ *
+ * @param {import('../shared/protocol').ExtractedFile} file
+ * @returns {Record<string, any>}
+ */
+function buildAddUriOptions(file) {
+  const options = { out: file.name };
+  if (file.headers) {
+    for (const [name, value] of Object.entries(file.headers)) {
+      const lower = name.toLowerCase();
+      if (lower === 'user-agent') options['user-agent'] = value;
+      if (lower === 'referer') options.referer = value;
+      // Without the login cookie quark's download server answers 412.
+      if (lower === 'cookie') options.header = [`Cookie: ${value}`];
+    }
+  }
+  // aria2 opens one connection per server by default, and quark throttles each
+  // connection: measured 0.10 MiB/s with 1, 8.6 MiB/s with 16. Not for baidu,
+  // which polices multi-connection downloads.
+  if (file.url) {
+    try {
+      const parsedUrl = new URL(file.url);
+      if (parsedUrl.hostname.endsWith('.quark.cn')) {
+        options.split = '16';
+        options['max-connection-per-server'] = '16';
+      }
+      if (!options.referer) options.referer = parsedUrl.origin + '/';
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  return options;
+}
+
+/**
  * @param {Aria2Config} config
  * @param {import('../shared/protocol').ExtractedFile} file
  * @returns {Promise<string>} the aria2 GID
  */
 async function addUri(config, file) {
-  const options = { out: file.name };
+  const options = buildAddUriOptions(file);
   if (config.dir) options.dir = config.dir;
-  for (const [name, value] of Object.entries(file.headers)) {
-    const lower = name.toLowerCase();
-    if (lower === 'user-agent') options['user-agent'] = value;
-    if (lower === 'referer') options.referer = value;
-    // Without the login cookie quark's download server answers 412.
-    if (lower === 'cookie') options.header = [`Cookie: ${value}`];
-  }
-  // aria2 opens one connection per server by default, and quark throttles each
-  // connection: measured 0.10 MiB/s with 1, 8.6 MiB/s with 16. Not for baidu,
-  // which polices multi-connection downloads.
-  if (new URL(file.url).hostname.endsWith('.quark.cn')) {
-    options.split = '16';
-    options['max-connection-per-server'] = '16';
-  }
-  if (!options.referer) options.referer = new URL(file.url).origin + '/';
 
   return /** @type {string} */ (await call(config, 'aria2.addUri', [[file.url], options]));
 }
 
-module.exports = { getVersion, addUri, endpoint };
+module.exports = { getVersion, addUri, endpoint, buildAddUriOptions };
