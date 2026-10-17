@@ -48,6 +48,19 @@
  */
 
 /**
+ * @typedef {object} DownloadProgress
+ * @property {string} gid
+ * @property {string} name
+ * @property {'waiting' | 'active' | 'complete' | 'error' | string} status
+ * @property {number} totalLength      Total length in bytes
+ * @property {number} completedLength  Completed length in bytes
+ * @property {number} downloadSpeed    Bytes per second
+ * @property {number} connections      Active connections
+ * @property {string | null} [errorCode]
+ * @property {string | null} [errorMessage]
+ */
+
+/**
  * The job state machine. Illegal states are not representable: a job carries
  * files only in `done`, and a reason only in `needs-human`.
  *
@@ -55,8 +68,9 @@
  *   | { phase: 'needs-human', reason: HumanReason }
  *   | { phase: 'extracting' }
  *   | { phase: 'delivering' }
- *   | { phase: 'done', files: ExtractedFile[] }
- *   | { phase: 'failed', code: FailureCode, message: string, detail?: string }} JobPhase
+ *   | { phase: 'downloading', files: ExtractedFile[], progress: DownloadProgress[] }
+ *   | { phase: 'done', files: ExtractedFile[], progress?: DownloadProgress[] }
+ *   | { phase: 'failed', code: FailureCode, message: string, detail?: string, progress?: DownloadProgress[] }} JobPhase
  */
 
 /**

@@ -121,4 +121,33 @@ async function addUri(config, file) {
   return /** @type {string} */ (await call(config, 'aria2.addUri', [[file.url], options]));
 }
 
-module.exports = { getVersion, addUri, endpoint, buildAddUriOptions };
+/**
+ * @param {Aria2Config} config
+ * @param {string} gid
+ * @returns {Promise<{
+ *   gid: string,
+ *   status: string,
+ *   totalLength: string,
+ *   completedLength: string,
+ *   downloadSpeed: string,
+ *   connections: string,
+ *   errorCode?: string,
+ *   errorMessage?: string
+ * }>}
+ */
+async function tellStatus(config, gid) {
+  const keys = [
+    'gid',
+    'status',
+    'totalLength',
+    'completedLength',
+    'downloadSpeed',
+    'connections',
+    'errorCode',
+    'errorMessage',
+  ];
+  const result = await call(config, 'aria2.tellStatus', [gid, keys]);
+  return /** @type {any} */ (result);
+}
+
+module.exports = { getVersion, addUri, endpoint, buildAddUriOptions, tellStatus };

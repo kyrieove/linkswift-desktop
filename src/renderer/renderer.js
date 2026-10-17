@@ -26,6 +26,7 @@
     'needs-human': { label: '需要你处理', tone: 'warn' },
     extracting: { label: '提取中', tone: 'busy' },
     delivering: { label: '推送中', tone: 'busy' },
+    downloading: { label: '下载中', tone: 'busy' },
     done: { label: '已完成', tone: 'ok' },
     failed: { label: '失败', tone: 'bad' },
   };
@@ -138,6 +139,13 @@
       const reason = HUMAN_REASONS[state.reason];
       if (reason) return { label: reason.chip, tone: 'warn' };
     }
+    if (state.phase === 'downloading') {
+      const isWaiting =
+        Array.isArray(state.progress) &&
+        state.progress.length > 0 &&
+        state.progress.every((p) => p.status === 'waiting');
+      return isWaiting ? { label: '等待中', tone: 'busy' } : { label: '下载中', tone: 'busy' };
+    }
     // A cancel is a failure in the contract but not a fault the user should read
     // as an error.
     if (state.phase === 'failed' && state.code === 'cancelled') {
@@ -245,8 +253,115 @@
       phase === 'loading' ||
       phase === 'needs-human' ||
       phase === 'extracting' ||
-      phase === 'delivering'
+      phase === 'delivering' ||
+      phase === 'downloading'
     );
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KiB', 'MiB', 'GiB'];
+    let idx = 0;
+    let val = bytes;
+    while (val >= 1024 && idx < units.length - 1) {
+      val /= 1024;
+      idx++;
+    }
+    return (idx === 0 ? Math.round(val) : val.toFixed(1)) + ' ' + units[idx];
+  }
+
+  function formatSpeed(bytes) {
+    return formatBytes(bytes) + '/s';
+  }
+
+  function formatEta(remaining, speed) {
+    if (!speed || speed <= 0 || !remaining || remaining <= 0) return '--';
+    const seconds = Math.round(remaining / speed);
+    if (seconds < 60) return seconds + ' 秒';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return mins + ' 分 ' + (secs < 10 ? '0' : '') + secs + ' 秒';
+  }
+
+  function downloadCard(p) {
+    const card = el('div', 'download-card');
+    const row = el('div', 'download-card__row');
+    const name = el('span', 'download-card__name', p.name || '（未命名文件）');
+    name.title = p.name || '';
+    const size = el(
+      'span',
+      'download-card__size mono',
+      formatBytes(p.completedLength) + ' / ' + formatBytes(p.totalLength)
+    );
+    row.append(name, size);
+
+    const pct =
+      p.totalLength > 0 ? Math.min(100, (p.completedLength / p.totalLength) * 100) : 0;
+    const track = el('div', 'track');
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', pct.toFixed(1));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+
+    const fill = el('div', 'track__fill');
+    fill.style.width = pct.toFixed(1) + '%';
+    if (p.status === 'complete') fill.classList.add('track__fill--ok');
+    if (p.status === 'error') fill.classList.add('track__fill--bad');
+    track.append(fill);
+
+    const metrics = el('div', 'download-card__metrics');
+    const mPct = el('span', 'metric');
+    const pctStrong = el('strong', 'mono metric__pct', pct.toFixed(1) + '%');
+    if (p.status === 'complete') pctStrong.style.color = 'var(--tone-ok)';
+    mPct.append(pctStrong);
+
+    const divider1 = el('span', 'metric-divider', '·');
+
+    const mSpeed = el('span', 'metric');
+    mSpeed.append(
+      el('span', 'metric__label', p.status === 'complete' ? '平均速度' : '速度'),
+      el('span', 'mono metric__val', formatSpeed(p.downloadSpeed))
+    );
+
+    const divider2 = el('span', 'metric-divider', '·');
+
+    const mEta = el('span', 'metric');
+    const remaining = Math.max(0, p.totalLength - p.completedLength);
+    mEta.append(
+      el('span', 'metric__label', '剩余'),
+      el(
+        'span',
+        'mono metric__val',
+        p.status === 'complete' ? '已完成' : formatEta(remaining, p.downloadSpeed)
+      )
+    );
+
+    const divider3 = el('span', 'metric-divider', '·');
+
+    const mConn = el('span', 'metric');
+    mConn.append(
+      el('span', 'metric__label', '连接'),
+      el('span', 'mono metric__val', String(p.connections || 0))
+    );
+
+    metrics.append(mPct, divider1, mSpeed, divider2, mEta, divider3, mConn);
+
+    if (p.status === 'waiting') {
+      const divider4 = el('span', 'metric-divider', '·');
+      const mWait = el('span', 'metric');
+      mWait.append(el('span', 'metric__label', '已推送 aria2，排队等待…'));
+      metrics.append(divider4, mWait);
+    } else if (p.status === 'complete') {
+      const divider4 = el('span', 'metric-divider', '·');
+      const mDone = el('span', 'metric');
+      const mDoneText = el('span', 'metric__label', '下载完成');
+      mDoneText.style.color = 'var(--tone-ok)';
+      mDone.append(mDoneText);
+      metrics.append(divider4, mDone);
+    }
+
+    card.append(row, track, metrics);
+    return card;
   }
 
   function cancelButton(job) {
@@ -290,6 +405,13 @@
       body.append(
         el('p', 'job__text', '正在推送到' + (DELIVERY_LABELS[target] || target) + '…')
       );
+    } else if (state.phase === 'downloading') {
+      const list = Array.isArray(state.progress) ? state.progress : [];
+      if (!list.length) {
+        body.append(el('p', 'job__text', '正在下载…'));
+      } else {
+        list.forEach((p) => body.append(downloadCard(p)));
+      }
     } else if (state.phase === 'needs-human') {
       const reason = HUMAN_REASONS[state.reason];
       body.append(
@@ -318,15 +440,21 @@
       actions.append(reveal);
       body.append(actions);
     } else if (state.phase === 'done') {
+      if (Array.isArray(state.progress) && state.progress.length) {
+        state.progress.forEach((p) => body.append(downloadCard(p)));
+      }
       const files = Array.isArray(state.files) ? state.files : [];
-      if (!files.length) {
+      if (!files.length && (!state.progress || !state.progress.length)) {
         body.append(el('p', 'job__text', '任务完成，但没有返回文件。'));
-      } else {
+      } else if (files.length) {
         const list = el('ul', 'files');
         files.forEach((file, index) => list.append(fileRow(file, job.id, index)));
         body.append(list);
       }
     } else if (state.phase === 'failed') {
+      if (Array.isArray(state.progress) && state.progress.length) {
+        state.progress.forEach((p) => body.append(downloadCard(p)));
+      }
       body.append(el('p', 'job__message', state.message || '任务失败。'));
       if (state.code) {
         const code = el('p', 'job__code', '错误类型：' + (FAILURE_LABELS[state.code] || state.code) + ' ');
@@ -680,6 +808,7 @@
   window.addEventListener('focus', scheduleClipboardProbe);
 
   api.onJobEvent(handleJobEvent);
+  window.__linkswift_dispatch_job__ = handleJobEvent;
 
   renderJobs();
   reflectDelivery();

@@ -40,6 +40,49 @@ const DIALOG_OUTCOMES = [
 ];
 
 /**
+ * Maps aria2 error code and messages to user-facing descriptions.
+ *
+ * @param {string | null | undefined} code
+ * @param {string | null | undefined} rawMessage
+ * @returns {{ message: string, detail: string }}
+ */
+function describeAria2Error(code, rawMessage) {
+  const msg = String(rawMessage || '');
+  const c = String(code || '');
+
+  let message = '下载失败。';
+  if (msg.includes('412') || c === '412') {
+    message = '412：网盘拒绝请求，可能是登录 Cookie 失效或链接已过期。';
+  } else if (msg.includes('403') || c === '403') {
+    message = '403：网盘拒绝访问（Forbidden），可能是链接已过期或需要重新登录。';
+  } else if (c === '22') {
+    if (msg.includes('412')) {
+      message = '412：网盘拒绝请求，可能是登录 Cookie 失效或链接已过期。';
+    } else if (msg.includes('403')) {
+      message = '403：网盘拒绝访问（Forbidden），可能是链接已过期或需要重新登录。';
+    } else {
+      message = msg ? `HTTP 请求失败（${msg}）` : '下载服务器返回 HTTP 错误，可能是 Cookie 或直链失效。';
+    }
+  } else if (c === '6' || c === '2' || c === '19' || /network|timeout|connect|resolve/i.test(msg)) {
+    message = '网络错误：无法连接到下载服务器，请检查网络。';
+  } else if (c === '9') {
+    message = '磁盘空间不足。';
+  } else if (c === '3') {
+    message = '404：下载资源不存在或已被删除。';
+  } else if (msg) {
+    message = msg;
+  } else if (c) {
+    message = `aria2 错误（错误码 ${c}）。`;
+  }
+
+  const detailLines = [];
+  if (c) detailLines.push(`errorCode: ${c}`);
+  if (msg) detailLines.push(`errorMessage: ${msg}`);
+
+  return { message, detail: detailLines.join('\n') };
+}
+
+/**
  * Pull the files out of the aria2.addUri body the userscript builds.
  *
  * The parameter list is not fixed-position: the script unshifts its RPC token
@@ -345,6 +388,15 @@ class Job {
     this.window = null;
     this.contentsId = -1;
     this.settled = false;
+    /** @type {NodeJS.Timeout | null} */
+    this.pollTimer = null;
+  }
+
+  stopPolling() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 
   /** @returns {import('../shared/protocol').Job} */
@@ -365,6 +417,7 @@ class Job {
    */
   fail(code, message, detail) {
     if (this.settled) return;
+    this.stopPolling();
     this.settled = true;
     this.setState({ phase: 'failed', code, message, detail });
     this.close();
@@ -385,8 +438,14 @@ class Job {
   }
 
   close() {
-    if (this.window && !this.window.isDestroyed()) this.window.destroy();
-    this.window = null;
+    if (this.window) {
+      const win = this.window;
+      this.window = null;
+      if (!win.isDestroyed()) {
+        win.removeAllListeners('closed');
+        win.destroy();
+      }
+    }
     this.onDone(this.contentsId);
   }
 
@@ -428,7 +487,9 @@ class Job {
     this.contentsId = this.window.webContents.id;
 
     this.window.on('closed', () => {
-      if (!this.settled) this.fail('cancelled', '窗口被关闭，任务已取消');
+      if (!this.settled && (this.state.phase === 'loading' || this.state.phase === 'extracting' || this.state.phase === 'needs-human')) {
+        this.fail('cancelled', '窗口被关闭，任务已取消');
+      }
     });
 
     return this.contentsId;
@@ -577,18 +638,116 @@ class Job {
     console.warn(`[job ${this.id}] refused a tab that would leak the aria2 token: ${url}`);
   }
 
+  /**
+   * @param {import('../shared/protocol').Aria2Config} config
+   * @param {Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>} gids
+   * @param {import('../shared/protocol').ExtractedFile[]} files
+   * @param {import('../shared/protocol').DownloadProgress[]} progressList
+   */
+  startPolling(config, gids, files, progressList) {
+    this.stopPolling();
+    let active = true;
+
+    const poll = async () => {
+      if (!active || this.settled) return;
+      try {
+        for (let i = 0; i < gids.length; i++) {
+          const { gid, file } = gids[i];
+          const s = await aria2.tellStatus(config, gid);
+          if (DEBUG) {
+            console.log(
+              `[DBG job ${this.id}] tellStatus(${gid}): status=${s.status} ${s.completedLength}/${s.totalLength} speed=${s.downloadSpeed} conn=${s.connections}`
+            );
+          }
+          progressList[i] = {
+            gid,
+            name: file.name,
+            status: s.status,
+            totalLength: parseInt(s.totalLength || '0', 10),
+            completedLength: parseInt(s.completedLength || '0', 10),
+            downloadSpeed: parseInt(s.downloadSpeed || '0', 10),
+            connections: parseInt(s.connections || '0', 10),
+            errorCode: s.errorCode || null,
+            errorMessage: s.errorMessage || null,
+          };
+        }
+
+        const failedItem = progressList.find((p) => p.status === 'error');
+        if (failedItem) {
+          active = false;
+          this.stopPolling();
+          this.settled = true;
+          const err = describeAria2Error(failedItem.errorCode, failedItem.errorMessage);
+          this.setState({
+            phase: 'failed',
+            code: 'delivery',
+            message: err.message,
+            detail: err.detail,
+            progress: progressList,
+          });
+          return;
+        }
+
+        const allComplete =
+          progressList.length > 0 && progressList.every((p) => p.status === 'complete');
+        if (allComplete) {
+          active = false;
+          this.stopPolling();
+          this.settled = true;
+          this.setState({
+            phase: 'done',
+            files,
+            progress: progressList,
+          });
+          return;
+        }
+
+        this.setState({
+          phase: 'downloading',
+          files,
+          progress: [...progressList],
+        });
+      } catch (err) {
+        if (DEBUG) {
+          console.warn(`[DBG job ${this.id}] tellStatus error: ${err.message}`);
+        }
+      }
+    };
+
+    poll();
+    this.pollTimer = setInterval(poll, 1000);
+  }
+
   /** @param {import('../shared/protocol').ExtractedFile[]} files */
   async accept(files) {
     if (this.settled) return;
-    this.settled = true;
+    this.close();
     this.setState({ phase: 'delivering' });
     try {
-      await this.deliver(files);
-      this.setState({ phase: 'done', files });
+      const result = await this.deliver(files);
+      if (!result || result.delivery !== 'aria2') {
+        this.settled = true;
+        this.setState({ phase: 'done', files });
+        return;
+      }
+
+      const progressList = result.gids.map(({ file, gid }) => ({
+        gid,
+        name: file.name,
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      }));
+      this.setState({ phase: 'downloading', files, progress: progressList });
+      this.startPolling(result.config, result.gids, files, progressList);
     } catch (error) {
+      this.settled = true;
       this.setState({ phase: 'failed', code: 'delivery', message: error.message });
     }
-    this.close();
   }
 }
 
@@ -697,8 +856,7 @@ class JobManager {
   cancel(jobId) {
     const job = this.jobs.get(jobId);
     if (!job || job.settled) return;
-    // Settle through fail so the renderer receives a terminal state. Closing the
-    // window alone would leave the row showing whatever phase it was in.
+    job.stopPolling();
     job.fail('cancelled', '任务已取消。');
   }
 
@@ -707,21 +865,38 @@ class JobManager {
     this.jobs.get(jobId)?.reveal();
   }
 
-  /** @param {import('../shared/protocol').ExtractedFile[]} files */
+  /**
+   * @param {import('../shared/protocol').ExtractedFile[]} files
+   * @returns {Promise<
+   *   | { delivery: 'clipboard', files: import('../shared/protocol').ExtractedFile[] }
+   *   | { delivery: 'browser', files: import('../shared/protocol').ExtractedFile[] }
+   *   | {
+   *       delivery: 'aria2',
+   *       files: import('../shared/protocol').ExtractedFile[],
+   *       gids: Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>,
+   *       config: import('../shared/protocol').Aria2Config,
+   *     }
+   * >}
+   */
   async deliver(files) {
     const settings = this.store.getSettings();
 
     if (settings.delivery === 'clipboard') {
       clipboard.writeText(files.map((file) => file.url).join('\r\n'));
-      return;
+      return { delivery: 'clipboard', files };
     }
 
     if (settings.delivery === 'browser') {
       for (const file of files) await shell.openExternal(file.url);
-      return;
+      return { delivery: 'browser', files };
     }
 
-    for (const file of files) await aria2.addUri(settings.aria2, file);
+    const gids = [];
+    for (const file of files) {
+      const gid = await aria2.addUri(settings.aria2, file);
+      gids.push({ file, gid });
+    }
+    return { delivery: 'aria2', files, gids, config: settings.aria2 };
   }
 
   /**
