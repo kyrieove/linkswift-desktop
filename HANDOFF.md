@@ -108,8 +108,16 @@
 ### 产品要求：默认开最高速度（用户 2026-10-17 定）
 
 - 软件默认就要按最高速度下载，不让用户自己调。实测夸克：aria2 默认每服务器 1 连接 = 0.10 MiB/s；`split=16`、`max-connection-per-server=16` = 8.6 MiB/s（约 85 倍）。已在 `src/main/aria2.js` 对 `*.quark.cn` 生效（commit `bd3d175`）。
-- **百度还没开**：当时担心百度对多连接限制严，只对夸克开。按用户要求，第 4 步百度跑通后要**实测**百度开 16 连接是否可用、速度多少，可用就对百度也默认开；被限制或封（403/限速更差）再回退并记原因。
-- 后续可考虑：`--min-split-size`、`--max-overall-download-limit=0`（不限速），以及应用设置页里的连接数项，实测后再定。
+- **百度 16 连接实测完成**：对百度网盘也开启 `split=16` 与 `max-connection-per-server=16`。实测 Baidu PCS 直链支持并发 Range 请求且不报 403。实测 1 连接速度约 80-105 KiB/s，开启多连接后实测峰值达到 124.7 KiB/s（受限于百度非会员服务端单 IP 整体带宽封顶）。没有出现 403 或下载失败，保留 16 连接配置。
+
+### 百度真机与本机 Chrome 登录实测（2026-10-17 完成，任务 4）
+
+- **登录模式**：改为使用独立专用 profile 唤起本机 Chrome（`--user-data-dir=%APPDATA%\linkswift\chrome-profile`），通过 CDP 监听关键 cookie（`BDUSS`、`__puus`）并同步至 Electron `persist:linkswift` 分区，完成后自动优雅关闭 Chrome。
+- **单文件页兼容**：百度单文件分享页新版为 Vite 架构，无 Vue2 实例且无 RequireJS。在 `src/preload/main-world.js` 补齐了 `require('system-core:context/context.js')` 兼容垫片，返回 `window.locals.file_list`，解决了 userscript 弹出「请先勾选要下载的文件哦~」的问题。
+- **真实下载落盘与大小**：
+  - 百度文件：`支持v1.15.7.rar`，大小 23,909,266 字节，无 `.aria2` 残留。
+  - 夸克回归文件：`033-V6.3.97-R1-优化版.zip`，大小 335,846,630 字节，下载速度 7.2 MiB/s（16 连接），无 `.aria2` 残留。
+- **免登录验证**：重启 Electron 应用后直接提交百度链接，自动识别持久化 `BDUSS`，静默获取 OAuth AccessToken 跑通下载，无需重新登录。
 
 ### 已知产品缺口（用户 2026-10-17 提出，暂不改，仅记录）
 

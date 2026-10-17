@@ -36,7 +36,7 @@ const { buildAddUriOptions } = require('../src/main/aria2');
   );
 }
 
-// 3. 百度域名 → 不设这两项（百度是否开 16 连接留给后续实测）
+// 3. 百度域名 → split 和 max-connection-per-server 都是 '16'
 {
   const file = {
     name: 'baidu_file.bin',
@@ -44,11 +44,11 @@ const { buildAddUriOptions } = require('../src/main/aria2');
     headers: {},
   };
   const options = buildAddUriOptions(file);
-  assert.strictEqual(options.split, undefined, '百度域名不应预先设置 split');
+  assert.strictEqual(options.split, '16', '百度域名 split 应为 16');
   assert.strictEqual(
     options['max-connection-per-server'],
-    undefined,
-    '百度域名不应预先设置 max-connection-per-server',
+    '16',
+    '百度域名 max-connection-per-server 应为 16',
   );
 }
 

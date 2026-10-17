@@ -39,7 +39,7 @@
   const HUMAN_REASONS = {
     login: {
       chip: '需登录',
-      text: '这个网盘需要登录后才能取直链。点「打开窗口」登录一次，登录状态保存在本机，之后免登录。',
+      text: '这个网盘需要登录后才能取直链。已打开本机 Chrome 浏览器，请在 Chrome 中登录网盘，登录完成后任务会自动继续。',
     },
     passcode: {
       chip: '需提取码',
@@ -63,6 +63,7 @@
     timeout: '超时',
     cancelled: '已取消',
     'no-files': '没取到文件',
+    'chrome-not-found': '未找到 Chrome',
   };
 
   // Only the host knows the full link grammar; this is just enough to decide
@@ -421,24 +422,26 @@
           reason ? reason.text : '需要你介入处理这个任务，原因：' + String(state.reason)
         )
       );
-      const reveal = el('button', 'btn btn--sm btn--primary', '打开窗口');
-      reveal.type = 'button';
-      reveal.dataset.focusKey = 'reveal:' + job.id;
-      reveal.addEventListener('click', async () => {
-        reveal.setAttribute('aria-busy', 'true');
-        try {
-          await api.revealWindow(job.id);
-        } catch (err) {
-          setNote(rowNote(reveal), '打开窗口失败：' + describeError(err));
-        } finally {
-          if (reveal.isConnected) {
-            reveal.removeAttribute('aria-busy');
+      if (state.reason !== 'login') {
+        const reveal = el('button', 'btn btn--sm btn--primary', '打开窗口');
+        reveal.type = 'button';
+        reveal.dataset.focusKey = 'reveal:' + job.id;
+        reveal.addEventListener('click', async () => {
+          reveal.setAttribute('aria-busy', 'true');
+          try {
+            await api.revealWindow(job.id);
+          } catch (err) {
+            setNote(rowNote(reveal), '打开窗口失败：' + describeError(err));
+          } finally {
+            if (reveal.isConnected) {
+              reveal.removeAttribute('aria-busy');
+            }
           }
-        }
-      });
-      const actions = el('div', 'job__actions');
-      actions.append(reveal);
-      body.append(actions);
+        });
+        const actions = el('div', 'job__actions');
+        actions.append(reveal);
+        body.append(actions);
+      }
     } else if (state.phase === 'done') {
       if (Array.isArray(state.progress) && state.progress.length) {
         state.progress.forEach((p) => body.append(downloadCard(p)));

@@ -9,6 +9,7 @@ const { randomUUID } = require('node:crypto');
 const { INTERNAL } = require('../shared/protocol');
 const { getProvider, parseShareLink } = require('../shared/providers');
 const aria2 = require('./aria2');
+const { performChromeLogin } = require('./chrome-login');
 
 const DEBUG = process.env.LINKSWIFT_DEBUG === '1';
 if (DEBUG) console.log('[DBG] LINKSWIFT_DEBUG enabled');
@@ -420,7 +421,7 @@ class Job {
     this.stopPolling();
     this.settled = true;
     this.setState({ phase: 'failed', code, message, detail });
-    this.close();
+    if (!DEBUG) this.close();
   }
 
   /** @param {import('../shared/protocol').HumanReason} reason */
@@ -428,8 +429,45 @@ class Job {
     if (this.settled) return;
     if (this.state.phase === 'needs-human' && this.state.reason === reason) return;
     this.setState({ phase: 'needs-human', reason });
-    // The user has to log in or type a code in the real page, so show it.
-    this.window?.show();
+    if (reason === 'login') {
+      this.handleChromeLogin();
+    } else {
+      this.window?.show();
+    }
+  }
+
+  async handleChromeLogin() {
+    try {
+      this.loginAbortController = new AbortController();
+      await performChromeLogin(this.link.provider, this.session, {
+        signal: this.loginAbortController.signal,
+      });
+      if (this.settled) return;
+
+      // Chrome login succeeded: cookies imported. Resume loading the share page.
+      this.setState({ phase: 'loading' });
+      if (this.window && !this.window.isDestroyed()) {
+        try {
+          await this.window.loadURL(this.link.raw);
+        } catch (error) {
+          if (error.code !== 'ERR_ABORTED' && !/ERR_ABORTED/.test(error.message)) {
+            this.fail('network', `加载分享页失败：${error.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      if (this.settled) return;
+      if (err.name === 'AbortError') return;
+      if (err.code === 'CHROME_NOT_FOUND') {
+        this.fail('chrome-not-found', '未找到 Chrome', err.message);
+      } else if (err.code === 'LOGIN_TIMEOUT') {
+        this.fail('timeout', err.message);
+      } else {
+        this.fail('failed', err.message);
+      }
+    } finally {
+      this.loginAbortController = null;
+    }
   }
 
   reveal() {
@@ -438,6 +476,12 @@ class Job {
   }
 
   close() {
+    if (this.loginAbortController) {
+      try {
+        this.loginAbortController.abort();
+      } catch {}
+      this.loginAbortController = null;
+    }
     if (this.window) {
       const win = this.window;
       this.window = null;
@@ -497,6 +541,15 @@ class Job {
 
   async load() {
     if (!this.window) return;
+    if (this.link.provider === 'baidu') {
+      try {
+        const cookies = await this.session.cookies.get({ name: 'BDUSS' });
+        if (cookies.length === 0) {
+          this.needsHuman('login');
+          return;
+        }
+      } catch {}
+    }
     try {
       await this.window.loadURL(this.link.raw);
     } catch (error) {
@@ -594,13 +647,17 @@ class Job {
         },
         this.session,
       );
-      if (DEBUG) {
+      if (observation.url.includes('openapi.baidu.com')) {
+        console.log(`[openapi] proxy ${observation.method} ${observation.url} -> ${response.status} finalUrl: ${response.finalUrl} text: ${typeof response?.text === 'string' ? response.text.slice(0, 500) : ''}`);
+      } else if (DEBUG) {
         const preview = typeof response?.text === 'string' ? response.text.slice(0, 300) : '';
         console.log(`[DBG job ${this.id}] proxy ${observation.method} ${observation.url} -> ${response.status} ${preview}`);
       }
       this.reply(observation.id, response);
     } catch (error) {
-      if (DEBUG) {
+      if (observation.url.includes('openapi.baidu.com')) {
+        console.log(`[openapi] proxy ${observation.method} ${observation.url} -> error: ${error.message}`);
+      } else if (DEBUG) {
         console.log(`[DBG job ${this.id}] proxy ${observation.method} ${observation.url} -> error: ${error.message}`);
       }
       this.reply(observation.id, {

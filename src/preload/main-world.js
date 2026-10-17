@@ -30,6 +30,30 @@ function installLinkSwiftShim(boot) {
   const lastHeaders = new Map();
   let nextId = 1;
 
+  // On modern single-file Baidu share pages, Baidu no longer exposes RequireJS or .file-list,
+  // but stores file metadata in window.locals. The userscript queries
+  // require("system-core:context/context.js")?.instanceForSystem?.list?.getSelected();
+  // provide a compatibility shim so single-file shares can be downloaded directly.
+  if (typeof window.require === 'undefined') {
+    window.require = function (module) {
+      if (module === 'system-core:context/context.js') {
+        return {
+          instanceForSystem: {
+            list: {
+              getSelected: function () {
+                const list =
+                  window.locals?.file_list ||
+                  (window.locals?.dump && window.locals.dump()?.file_list?.value);
+                return Array.isArray(list) ? list : [];
+              },
+            },
+          },
+        };
+      }
+      return null;
+    };
+  }
+
   function post(message) {
     const envelope = { from: boot.fromPage, kind: message.kind };
     envelope[boot.marker] = true;

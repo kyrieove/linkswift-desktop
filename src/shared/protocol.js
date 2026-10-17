@@ -13,7 +13,7 @@
  * @typedef {'quark' | 'baidu'} ProviderId
  * @typedef {'aria2' | 'clipboard' | 'browser'} DeliveryTarget
  * @typedef {'login' | 'passcode' | 'captcha' | 'unknown-page'} HumanReason
- * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files'} FailureCode
+ * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found'} FailureCode
  */
 
 /**

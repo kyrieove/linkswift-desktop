@@ -96,7 +96,11 @@ function buildAddUriOptions(file) {
   if (file.url) {
     try {
       const parsedUrl = new URL(file.url);
-      if (parsedUrl.hostname.endsWith('.quark.cn')) {
+      if (
+        parsedUrl.hostname.endsWith('.quark.cn') ||
+        parsedUrl.hostname.endsWith('.baidu.com') ||
+        parsedUrl.hostname.endsWith('.baidupcs.com')
+      ) {
         options.split = '16';
         options['max-connection-per-server'] = '16';
       }
