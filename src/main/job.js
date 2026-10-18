@@ -92,12 +92,14 @@ function describeAria2Error(code, rawMessage) {
   if (msg.includes('412') || c === '412') {
     message = '412：网盘拒绝请求，可能是登录 Cookie 失效或链接已过期。';
   } else if (msg.includes('403') || c === '403') {
-    message = '403：网盘拒绝访问（Forbidden），可能是链接已过期或需要重新登录。';
+    message =
+      '403：网盘拒绝下载。要么直链过期，要么这个直链要求登录态（UC 和夸克的下载地址不带账号 Cookie 就会这样）。先点「登录网盘」，再点「重新取链」。';
   } else if (c === '22') {
     if (msg.includes('412')) {
       message = '412：网盘拒绝请求，可能是登录 Cookie 失效或链接已过期。';
     } else if (msg.includes('403')) {
-      message = '403：网盘拒绝访问（Forbidden），可能是链接已过期或需要重新登录。';
+      message =
+        '403：网盘拒绝下载。要么直链过期，要么这个直链要求登录态（UC 和夸克的下载地址不带账号 Cookie 就会这样）。先点「登录网盘」，再点「重新取链」。';
     } else {
       message = msg ? `HTTP 请求失败（${msg}）` : '下载服务器返回 HTTP 错误，可能是 Cookie 或直链失效。';
     }
@@ -982,6 +984,16 @@ class Job {
     this.setState({ phase: 'delivering', files });
     try {
       const result = await this.deliver(files);
+      // A cancel that arrives while the pushes are in flight has to undo them,
+      // or the row says 已取消 while aria2 keeps downloading.
+      if (this.settled) {
+        if (result?.delivery === 'aria2' && result.config) {
+          for (const { gid } of result.gids ?? []) {
+            await aria2.remove(result.config, gid).catch(() => {});
+          }
+        }
+        return;
+      }
       if (!result || result.delivery !== 'aria2' || !result.gids?.length) {
         this.settled = true;
         this.setState({ phase: 'done', files });
@@ -1015,6 +1027,42 @@ class Job {
     }
   }
 
+  /**
+   * Push every file that is not already on disk. Pushing a finished file again
+   * would download a second renamed copy of it, which is worse than the failure
+   * being resumed.
+   *
+   * @param {import('../shared/protocol').Aria2Config} config
+   */
+  async resubmit(config) {
+    const gids = [];
+    const progress = [];
+    for (let index = 0; index < this.files.length; index += 1) {
+      const file = this.files[index];
+      const existing = this.gids[index];
+      if (this.progress[index]?.status === 'complete' && existing) {
+        gids.push(existing);
+        progress.push(this.progress[index]);
+        continue;
+      }
+      const gid = await aria2.addUri(config, file);
+      gids.push({ file, gid });
+      progress.push({
+        gid,
+        name: file.name,
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      });
+    }
+    this.gids = gids;
+    this.progress = progress;
+  }
+
   /** aria2 may have lost the GID across its own restart; push the URI once more. */
   async readd() {
     if (this.readded || !this.aria2Config || !this.files.length) {
@@ -1031,22 +1079,7 @@ class Job {
     }
     this.readded = true;
     try {
-      const gids = [];
-      for (const file of this.files) {
-        gids.push({ file, gid: await aria2.addUri(this.aria2Config, file) });
-      }
-      this.gids = gids;
-      this.progress = gids.map(({ file, gid }) => ({
-        gid,
-        name: file.name,
-        status: 'waiting',
-        totalLength: 0,
-        completedLength: 0,
-        downloadSpeed: 0,
-        connections: 0,
-        errorCode: null,
-        errorMessage: null,
-      }));
+      await this.resubmit(this.aria2Config);
       return true;
     } catch (error) {
       this.settled = true;
@@ -1095,26 +1128,30 @@ class Job {
           };
         }
 
-        const failedItem = this.progress.find((item) => item.status === 'error');
-        if (failedItem) {
+        const finished = this.progress.filter(
+          (item) => item.status === 'complete' || item.status === 'error',
+        );
+        const broken = this.progress.filter((item) => item.status === 'error');
+
+        // A folder with forty files must not die because one of them 403'd. The
+        // job is only over once every file has stopped.
+        if (this.progress.length > 0 && finished.length === this.progress.length) {
           this.stopPolling();
           this.settled = true;
-          const described = describeAria2Error(failedItem.errorCode, failedItem.errorMessage);
+          if (!broken.length) {
+            this.setState({ phase: 'done', files: this.files, progress: this.progress });
+            return;
+          }
+          const described = describeAria2Error(broken[0].errorCode, broken[0].errorMessage);
+          const okCount = this.progress.length - broken.length;
           this.setState({
             phase: 'failed',
             code: 'delivery',
-            message: described.message,
+            message: `${broken.length} 个文件下载失败${okCount ? `，${okCount} 个已完成` : ''}。${described.message}`,
             detail: described.detail,
             files: this.files,
             progress: this.progress,
           });
-          return;
-        }
-
-        if (this.progress.length > 0 && this.progress.every((item) => item.status === 'complete')) {
-          this.stopPolling();
-          this.settled = true;
-          this.setState({ phase: 'done', files: this.files, progress: this.progress });
           return;
         }
 
@@ -1164,24 +1201,10 @@ class Job {
     this.settled = false;
     this.readded = false;
     this.aria2Config = config;
+    this.files = files;
     try {
-      const gids = [];
-      for (const file of files) gids.push({ file, gid: await aria2.addUri(config, file) });
-      this.files = files;
-      this.gids = gids;
-      const progress = gids.map(({ file, gid }) => ({
-        gid,
-        name: file.name,
-        status: 'waiting',
-        totalLength: 0,
-        completedLength: 0,
-        downloadSpeed: 0,
-        connections: 0,
-        errorCode: null,
-        errorMessage: null,
-      }));
-      this.progress = progress;
-      this.setState({ phase: 'downloading', files, progress });
+      await this.resubmit(config);
+      this.setState({ phase: 'downloading', files: this.files, progress: this.progress });
       this.startPolling();
       return true;
     } catch (error) {
@@ -1198,6 +1221,32 @@ class Job {
       for (const { gid } of this.gids) await aria2.remove(this.aria2Config, gid).catch(() => {});
     }
     this.fail('cancelled', '任务已取消。');
+  }
+
+  /**
+   * A UC or quark download link is signed for a logged-in client: fetching it
+   * without the account cookie answers 403 "require login", which looks exactly
+   * like an expired link. Give the user the login that fixes it.
+   *
+   * @returns {Promise<{ ok: boolean, message: string }>}
+   */
+  async loginNow() {
+    const provider = getProvider(this.link.provider);
+    if (!provider) return { ok: false, message: `不认识这个网盘：${this.link.provider}` };
+    if (provider.loginKind !== 'cookie') {
+      this.window?.show();
+      this.window?.focus();
+      return {
+        ok: false,
+        message: `${provider.label} 的登录在应用自己的窗口里，点「打开窗口」登录一次。`,
+      };
+    }
+    try {
+      await performChromeLogin(this.link.provider, this.session, {});
+      return { ok: true, message: `已把 ${provider.label} 的登录态同步进来，点「重新取链」再试一次。` };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
   }
 }
 
@@ -1444,6 +1493,13 @@ class JobManager {
   async resume(jobId) {
     const job = this.jobs.get(jobId);
     return job ? job.resume() : false;
+  }
+
+  /** @param {string} jobId */
+  async login(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return { ok: false, message: '这个任务已经不在列表里了。' };
+    return job.loginNow();
   }
 
   /**

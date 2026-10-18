@@ -26,6 +26,9 @@
     browser: '取到直链后交给系统默认浏览器下载。',
   };
 
+  // Which netdisks authenticate through a browser cookie the app can import.
+  const PROVIDER_LOGIN = { quark: 'cookie', baidu: 'cookie', uc: 'cookie', xunlei: 'window' };
+
   const MODE_HINTS = {
     builtin: '软件自带 aria2，打开就启动，下载目录可改。退出时会记住进度，下次打开接着下。',
     external: '用你自己跑着的 aria2 / Motrix / AriaNg，填它的 RPC 地址与令牌。',
@@ -54,6 +57,10 @@
     login: {
       chip: '需登录',
       text: '这个网盘需要登录后才能取直链。已打开本机 Chrome 浏览器，请在 Chrome 中登录网盘，登录完成后任务会自动继续。登录过期也走这里。',
+    },
+    'login-window': {
+      chip: '需登录',
+      text: '这个网盘的登录态存在它自己的页面里，浏览器里的登录带不过来。分享页窗口已经打开，请在那个窗口里登录，登录完成后任务会自动继续。',
     },
     passcode: {
       chip: '需提取码',
@@ -175,10 +182,21 @@
     return PROVIDER_LABELS[id] || (id ? String(id) : '未知网盘');
   }
 
+  function humanReasonFor(job) {
+    const state = job.state || {};
+    if (
+      state.reason === 'login' &&
+      PROVIDER_LOGIN[job.link && job.link.provider] === 'window'
+    ) {
+      return HUMAN_REASONS['login-window'];
+    }
+    return HUMAN_REASONS[state.reason];
+  }
+
   function chipInfo(job) {
     const state = job.state || {};
     if (state.phase === 'needs-human') {
-      const reason = HUMAN_REASONS[state.reason];
+      const reason = humanReasonFor(job);
       if (reason) return { label: reason.chip, tone: 'warn' };
     }
     if (state.phase === 'downloading') {
@@ -310,6 +328,7 @@
       phase === 'loading' ||
       phase === 'needs-human' ||
       phase === 'extracting' ||
+      phase === 'linked' ||
       phase === 'delivering' ||
       phase === 'downloading' ||
       phase === 'paused'
@@ -509,6 +528,32 @@
     });
   }
 
+  /**
+   * A UC or quark download link is signed for a logged-in client, so a 403 on the
+   * direct link is usually a missing login rather than an expired link.
+   */
+  function loginButton(job) {
+    const btn = el('button', 'btn btn--sm btn--quiet', '登录网盘');
+    btn.type = 'button';
+    btn.dataset.focusKey = 'login:' + job.id;
+    btn.addEventListener('click', async () => {
+      btn.setAttribute('aria-busy', 'true');
+      btn.textContent = '等登录…';
+      try {
+        const result = await api.login(job.id);
+        setNote(rowNote(btn), result.message, result.ok ? 'ok' : 'error');
+      } catch (err) {
+        setNote(rowNote(btn), '登录失败：' + describeError(err), 'error');
+      } finally {
+        if (btn.isConnected) {
+          btn.removeAttribute('aria-busy');
+          btn.textContent = '登录网盘';
+        }
+      }
+    });
+    return btn;
+  }
+
   function diagnosisText(job) {
     const state = job.state || {};
     const link = job.link || {};
@@ -605,7 +650,7 @@
       const hint = accountSpeedHint(job);
       if (hint) body.append(hint);
     } else if (state.phase === 'needs-human') {
-      const reason = HUMAN_REASONS[state.reason];
+      const reason = humanReasonFor(job);
       body.append(
         el(
           'p',
@@ -717,6 +762,12 @@
       actions.append(resumeButton(job));
     }
     if (phase === 'failed' && state.code !== 'cancelled') actions.append(retryButton(job));
+    if (
+      phase === 'failed' &&
+      PROVIDER_LOGIN[job.link && job.link.provider] === 'cookie'
+    ) {
+      actions.append(loginButton(job));
+    }
     if (cancellable(phase)) actions.append(cancelButton(job));
     if (actions.childNodes.length) head.append(actions);
 
@@ -1297,6 +1348,9 @@
           step(jobId, 1400, { phase: 'done', files: demoFiles });
         }
         return Promise.resolve();
+      },
+      login() {
+        return Promise.resolve({ ok: false, message: '预览模式不会打开浏览器登录。' });
       },
       onJobEvent(handler) {
         listeners.push(handler);

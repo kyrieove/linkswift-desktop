@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('linkswift', {
   getSettings: () => ipcRenderer.invoke(INVOKE.getSettings),
   setSettings: (settings) => ipcRenderer.invoke(INVOKE.setSettings, settings),
   revealWindow: (jobId) => ipcRenderer.invoke(INVOKE.revealWindow, jobId),
+  login: (jobId) => ipcRenderer.invoke(INVOKE.login, jobId),
   testAria2: (config) => ipcRenderer.invoke(INVOKE.testAria2, config),
   aria2Status: () => ipcRenderer.invoke(INVOKE.aria2Status),
   restartAria2: () => ipcRenderer.invoke(INVOKE.restartAria2),

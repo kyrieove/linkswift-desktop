@@ -146,6 +146,61 @@ async function main() {
     assert.strictEqual(job.state.reason, 'manual');
     assert(job.state.message.includes('下载助手'), '手动兜底要告诉用户点哪里');
   }
+
+  // 8. 文件夹里一个文件挂了，其余继续；全部停下来才算这个任务失败
+  {
+    const aria2 = require('../src/main/aria2');
+    const realFindGid = aria2.findGid;
+    const statuses = { 'gid-a': 'active', 'gid-b': 'error' };
+    aria2.findGid = async (_config, gid) => ({
+      gid,
+      status: statuses[gid],
+      totalLength: '100',
+      completedLength: statuses[gid] === 'complete' ? '100' : '10',
+      downloadSpeed: '0',
+      connections: '1',
+      errorCode: statuses[gid] === 'error' ? '22' : undefined,
+      errorMessage:
+        statuses[gid] === 'error' ? 'The response status is not successful. status=403' : undefined,
+    });
+
+    const { job } = makeJob();
+    job.files = [
+      { name: 'a.bin', url: 'https://example.com/a', headers: {} },
+      { name: 'b.bin', url: 'https://example.com/b', headers: {} },
+    ];
+    job.gids = [
+      { file: job.files[0], gid: 'gid-a' },
+      { file: job.files[1], gid: 'gid-b' },
+    ];
+    job.progress = job.gids.map(({ file, gid }) => ({
+      gid,
+      name: file.name,
+      status: 'waiting',
+      totalLength: 0,
+      completedLength: 0,
+      downloadSpeed: 0,
+      connections: 0,
+      errorCode: null,
+      errorMessage: null,
+    }));
+    job.aria2Config = { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' };
+    job.settled = false;
+    job.startPolling();
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.strictEqual(job.state.phase, 'downloading', '还有一个在下载，任务就不该判失败');
+
+    statuses['gid-a'] = 'complete';
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.strictEqual(job.state.phase, 'failed');
+    assert(
+      job.state.message.includes('1 个文件下载失败') && job.state.message.includes('1 个已完成'),
+      `失败信息应数清完成与失败：${job.state.message}`,
+    );
+    assert.strictEqual(job.state.progress.filter((p) => p.status === 'complete').length, 1);
+    job.stopPolling();
+    aria2.findGid = realFindGid;
+  }
 }
 
 main().then(
