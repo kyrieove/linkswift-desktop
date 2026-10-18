@@ -445,6 +445,8 @@ class Job {
     this.pollTimer = null;
     /** @type {NodeJS.Timeout | null} */
     this.flushTimer = null;
+    /** @type {NodeJS.Timeout | null} */
+    this.loginWatch = null;
     /** @type {import('../shared/protocol').ExtractedFile[]} */
     this.pendingFiles = [];
     /** @type {import('../shared/protocol').ExtractedFile[]} */
@@ -516,11 +518,84 @@ class Job {
     if (this.settled) return;
     if (this.state.phase === 'needs-human' && this.state.reason === reason) return;
     this.setState({ phase: 'needs-human', reason, ...extra });
-    if (reason === 'login' && getProvider(this.link.provider)?.loginKind === 'cookie') {
-      this.handleChromeLogin();
-    } else {
-      this.window?.show();
-      this.window?.focus();
+    if (reason === 'login') {
+      const provider = getProvider(this.link.provider);
+      if (provider?.loginKind === 'window') this.openLoginPage(provider);
+      else this.handleChromeLogin();
+      return;
+    }
+    this.window?.show();
+    this.window?.focus();
+  }
+
+  /**
+   * 迅雷 keeps its credentials in the page's localStorage, so the only place a
+   * login can happen is a window of ours. Point that window at the provider's own
+   * sign-in page instead of the share page, and watch for the credential to
+   * appear rather than asking the user to report back.
+   *
+   * @param {import('../shared/providers').Provider} provider
+   */
+  async openLoginPage(provider) {
+    const win = this.window;
+    if (!win || win.isDestroyed()) return;
+    try {
+      await win.loadURL(provider.loginUrl || this.link.raw);
+    } catch (error) {
+      if (DEBUG) console.log(`[DBG job ${this.id}] login page failed: ${error.message}`);
+    }
+    win.show();
+    win.focus();
+
+    this.stopLoginWatch();
+    const deadline = Date.now() + 5 * 60 * 1000;
+    this.loginWatch = setInterval(async () => {
+      if (this.settled || !this.window || this.window.isDestroyed() || Date.now() > deadline) {
+        this.stopLoginWatch();
+        return;
+      }
+      let signedIn = false;
+      try {
+        signedIn = await this.window.webContents.executeJavaScript(
+          `(function () {
+            try {
+              return Object.keys(localStorage).some(function (key) {
+                return key.indexOf('credentials_') === 0;
+              });
+            } catch (error) {
+              return false;
+            }
+          })()`,
+        );
+      } catch {
+        // The page is mid-navigation; the next tick looks again.
+      }
+      if (signedIn) {
+        this.stopLoginWatch();
+        this.resumeAfterLogin();
+      }
+    }, 2000);
+  }
+
+  stopLoginWatch() {
+    if (this.loginWatch) {
+      clearInterval(this.loginWatch);
+      this.loginWatch = null;
+    }
+  }
+
+  /** Navigate back to the share page and start the extraction over. */
+  async resumeAfterLogin() {
+    this.stopLoginWatch();
+    if (this.settled) return;
+    const win = this.window;
+    if (!win || win.isDestroyed()) return;
+    this.setState({ phase: 'loading' });
+    try {
+      await win.loadURL(this.link.raw);
+    } catch (error) {
+      if (error.code === 'ERR_ABORTED' || /ERR_ABORTED/.test(error.message)) return;
+      this.fail('network', `登录后重新打开分享页失败：${error.message}`);
     }
   }
 
@@ -564,6 +639,7 @@ class Job {
   }
 
   close() {
+    this.stopLoginWatch();
     if (this.loginAbortController) {
       try {
         this.loginAbortController.abort();
@@ -669,12 +745,10 @@ class Job {
 
     switch (observation.kind) {
       case 'injected':
-        // After a transfer the window is showing the user's own drive, where the
-        // script is live but the share steps do not apply.
-        if (this.state.phase === 'needs-human' && this.state.reason === 'manual') {
-          this.setState(this.state);
-          return;
-        }
+        // A page we navigated to for a human, such as a drive listing after a
+        // transfer or a provider's own login page, is not a share page: running
+        // the share steps on it only produces a bogus failure.
+        if (this.state.phase === 'needs-human') return;
         this.setState({ phase: 'extracting' });
         this.window?.webContents.send(INTERNAL.command, {
           kind: 'run-driver',
@@ -977,13 +1051,55 @@ class Job {
     });
   }
 
+  /**
+   * Attach the session's cookies for the file's own host before handing the URL
+   * to aria2.
+   *
+   * Some netdisks hand out a CDN link whose OSS callback answers
+   * `require login [auth not found]` unless the account cookie comes along, and
+   * the userscript does not always forward one (UC in particular sends none).
+   * Chromium does the matching, so only cookies that belong to that URL are ever
+   * sent, and nothing leaks to a host the session has no cookies for.
+   *
+   * @param {import('../shared/protocol').ExtractedFile[]} files
+   * @returns {Promise<import('../shared/protocol').ExtractedFile[]>}
+   */
+  async withCookies(files) {
+    if (!this.session) return files;
+    return Promise.all(
+      files.map(async (file) => {
+        let jar = [];
+        try {
+          jar = await this.session.cookies.get({ url: file.url });
+        } catch {
+          return file;
+        }
+        if (!jar.length) return file;
+        const headers = file.headers || {};
+        const existing = Object.entries(headers).find(([key]) => key.toLowerCase() === 'cookie')?.[1];
+        const present = new Set(
+          String(existing || '')
+            .split(';')
+            .map((pair) => pair.split('=')[0].trim())
+            .filter(Boolean),
+        );
+        const extra = jar
+          .filter((cookie) => !present.has(cookie.name))
+          .map((cookie) => `${cookie.name}=${cookie.value}`);
+        if (!extra.length) return file;
+        const merged = existing ? `${existing}; ${extra.join('; ')}` : extra.join('; ');
+        return { ...file, headers: { ...headers, Cookie: merged } };
+      }),
+    );
+  }
+
   /** @param {import('../shared/protocol').ExtractedFile[]} files */
   async deliverNow(files) {
     this.files = files;
     this.close();
     this.setState({ phase: 'delivering', files });
     try {
-      const result = await this.deliver(files);
+      const result = await this.deliver(await this.withCookies(files));
       // A cancel that arrives while the pushes are in flight has to undo them,
       // or the row says 已取消 while aria2 keeps downloading.
       if (this.settled) {
@@ -1045,7 +1161,7 @@ class Job {
         progress.push(this.progress[index]);
         continue;
       }
-      const gid = await aria2.addUri(config, file);
+      const gid = await aria2.addUri(config, (await this.withCookies([file]))[0]);
       gids.push({ file, gid });
       progress.push({
         gid,
@@ -1500,6 +1616,19 @@ class JobManager {
     const job = this.jobs.get(jobId);
     if (!job) return { ok: false, message: '这个任务已经不在列表里了。' };
     return job.loginNow();
+  }
+
+  /**
+   * The manual way out of a page login, for when the app's own credential check
+   * does not fire.
+   *
+   * @param {string} jobId
+   */
+  async continueAfterLogin(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return { ok: false, message: '这个任务已经不在列表里了。' };
+    await job.resumeAfterLogin();
+    return { ok: true, message: '已重新打开分享页。' };
   }
 
   /**

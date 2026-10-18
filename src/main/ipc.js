@@ -39,6 +39,7 @@ function registerIpc(bus, manager) {
   });
   bus.handle(INVOKE.revealWindow, (_event, jobId) => manager.reveal(String(jobId)));
   bus.handle(INVOKE.login, (_event, jobId) => manager.login(String(jobId)));
+  bus.handle(INVOKE.continueAfterLogin, (_event, jobId) => manager.continueAfterLogin(String(jobId)));
   bus.handle(INVOKE.aria2Status, () => manager.aria2Status());
   bus.handle(INVOKE.restartAria2, async () => {
     const settings = manager.store.getSettings();

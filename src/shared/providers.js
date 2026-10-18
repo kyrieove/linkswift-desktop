@@ -32,6 +32,7 @@
  * @property {Step[]} [transferSteps]  Run when the share refuses a large file
  * @property {string} [driveUrl]  The account's own drive, for the post-transfer step
  * @property {'cookie' | 'window'} [loginKind]  How this provider authenticates
+ * @property {string} [loginUrl]  Where a window-login provider signs in
  * @property {boolean} [experimental]  A driver miss degrades to a manual window
  */
 
@@ -255,6 +256,7 @@ const PROVIDERS = {
     // 迅雷 keeps its credentials in localStorage, not in a cookie, so the Chrome
     // cookie import cannot carry a login over; the app's own window has to own it.
     loginKind: 'window',
+    loginUrl: 'https://pan.xunlei.com/',
     driveUrl: 'https://pan.xunlei.com/?folderId=',
     experimental: true,
     steps: XUNLEI_STEPS,

@@ -104,6 +104,7 @@ const INVOKE = {
   setSettings: 'linkswift:settings:set',
   revealWindow: 'linkswift:window:reveal',
   login: 'linkswift:login',
+  continueAfterLogin: 'linkswift:login:continue',
   testAria2: 'linkswift:aria2:test',
   aria2Status: 'linkswift:aria2:status',
   restartAria2: 'linkswift:aria2:restart',

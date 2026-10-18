@@ -60,7 +60,7 @@
     },
     'login-window': {
       chip: '需登录',
-      text: '这个网盘的登录态存在它自己的页面里，浏览器里的登录带不过来。分享页窗口已经打开，请在那个窗口里登录，登录完成后任务会自动继续。',
+      text: '这个网盘的登录态存在它自己的页面里，浏览器里的登录带不过来。已经打开它自己的登录页，请在那个窗口里登录；登录完成后程序会自动继续，没自动继续就点「我已登录，继续」。',
     },
     passcode: {
       chip: '需提取码',
@@ -658,7 +658,9 @@
           state.message || (reason ? reason.text : '需要你介入处理这个任务，原因：' + String(state.reason)),
         ),
       );
-      if (state.reason !== 'login') {
+      const windowLogin =
+        state.reason === 'login' && PROVIDER_LOGIN[job.link && job.link.provider] === 'window';
+      if (state.reason !== 'login' || windowLogin) {
         const reveal = el('button', 'btn btn--sm btn--primary', '打开窗口');
         reveal.type = 'button';
         reveal.dataset.focusKey = 'reveal:' + job.id;
@@ -676,6 +678,30 @@
         });
         const actions = el('div', 'job__actions');
         actions.append(reveal);
+        body.append(actions);
+      }
+      // A provider that signs in on its own page cannot be finished for the user,
+      // but the app should not leave them with no way to say "done".
+      if (windowLogin) {
+        const done = el('button', 'btn btn--sm btn--primary', '我已登录，继续');
+        done.type = 'button';
+        done.dataset.focusKey = 'login-done:' + job.id;
+        done.addEventListener('click', async () => {
+          done.setAttribute('aria-busy', 'true');
+          try {
+            const result = await api.continueAfterLogin(job.id);
+            if (result && result.message) setNote(rowNote(done), result.message, result.ok ? 'ok' : 'error');
+          } catch (err) {
+            setNote(rowNote(done), '继续失败：' + describeError(err), 'error');
+          } finally {
+            if (done.isConnected) {
+              done.removeAttribute('aria-busy');
+              done.textContent = '我已登录，继续';
+            }
+          }
+        });
+        const actions = el('div', 'job__actions');
+        actions.append(done);
         body.append(actions);
       }
     } else if (state.phase === 'done') {
@@ -1351,6 +1377,9 @@
       },
       login() {
         return Promise.resolve({ ok: false, message: '预览模式不会打开浏览器登录。' });
+      },
+      continueAfterLogin() {
+        return Promise.resolve({ ok: true, message: '预览模式：已重新打开分享页。' });
       },
       onJobEvent(handler) {
         listeners.push(handler);

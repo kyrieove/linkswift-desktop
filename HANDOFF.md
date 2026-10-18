@@ -146,6 +146,17 @@
   2. 「已拿到链接」阶段点取消时，正在进行的投递会覆盖掉取消状态（实测把一个 320MB 的夸克文件下完了才发现）→ `deliverNow` 在 `deliver` 返回后检查 `settled`，已推送的 GID 一并 `forceRemove`。
 - 测试期间误下到 `test_download\cancel-probe` 的 335,846,630 字节夸克文件已删除；`test_download` 只留百度那个 23,909,266 字节的验收文件。
 
+### 登录之后：UC 通了，迅雷登录入口补上（2026-10-18 补测）
+
+- **UC 的 403 根因找到了，不是缺登录。** 用户已在应用自己的 Chrome 里登录 UC（`%APPDATA%\linkswift\chrome-profile` 里 `__puus`、`drive.uc.cn` 都有），重新提交还是 403 `require login [auth not found]`。原因是上游脚本的 UC 分支只给直链带了 `User-Agent` 和 `Sec-Ch-Ua`，**没带 Cookie**；而 UC 的 OSS 回调要账号 Cookie。
+  - 修法：`Job.withCookies()` 在把直链交给 aria2 之前，用 `session.cookies.get({ url: file.url })` 问 Chromium 要这个地址该带的 Cookie 并合并进 `Cookie` 头。域名匹配由 Chromium 做，不会把别处 Cookie 发到无关主机。首次投递和「继续/重推」都走这一层。
+  - 实测：`https://drive.uc.cn/s/38af796e2a8d4` 的 `readme.doc` 18,514 字节，已拿到链接 → 下载中 → 下载完成，落盘 `test_download\readme.doc`。
+- **迅雷找不到登录入口，是窗口开错了页。** 之前「需登录」只是把分享页窗口显示出来，迅雷分享页上没有明显的登录按钮。现在窗口型登录会直接跳到 `loginUrl`（`https://pan.xunlei.com/login/`），并且：
+  - 卡片上有「打开窗口」「我已登录，继续」两个按钮，自动检测靠轮询 localStorage 的 `credentials_` 前缀（迅雷凭证就存在那里）；
+  - 注入时如果任务已是 `needs-human`，不再跑分享页步骤表，否则登录页会被当成分享页，误报「需手动一步」（这次实测踩到了，已修）。
+- 实测：迅雷链接 → 解析中 → 需登录，窗口停在 `https://pan.xunlei.com/login/`，按钮为「取消 / 打开窗口 / 我已登录，继续」。
+
+
 
 
 ## 历史记录（2026-10-16 至 10-17，已被上面一节覆盖）
