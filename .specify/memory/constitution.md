@@ -1,50 +1,89 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Unidownload Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. 上游事实先核实，再动手
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+任何依赖上游 LinkSwift 行为、网盘页面结构、Electron 能力的结论，都必须先在本仓库内实测或
+正文检索取得可核对的位置（`path:line`、脚本行号、探针输出），然后才写进设计或代码。
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+- 未核实的判断写成「未确认」，不得作为实现前提。
+- 上游脚本行号引用保留，便于上游改版后复核。
+- 已踩过的坑写进 `LESSONS.md`，能改成检查的一律改成检查。
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+理由：本项目全部价值建立在别人写好的用户脚本上，一次凭印象的猜测就会让整条链路静默失效。
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### II. 单入口可复跑的检查（NON-NEGOTIABLE）
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+每完成一项改动，`npm run check` 必须全绿才算完成；新增的检查脚本必须先登记进
+`tools/run-checks.js` 的 `SCRIPT_STEPS`，不允许写一个不被单入口调到的检查。
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+- 修复必须由能复现原症状的检查或真实下载验证，无关检查全绿不构成证据。
+- 涉及 aria2 生命周期、任务状态机的改动跑 `npm run check:lifecycle`、`npm run check:job`。
+- 拿不到真实条件的验收（缺登录会话、需人工点击）记为「阻塞」，不得写成「通过」。
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+### III. 真实下载才算完成
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+「拿到直链」「已投递」「已提示手动处理」都不是完成；只有文件落盘且字节数与上游一致，
+且无 `.aria2` 残留，任务才能标 `done`。
+
+- 状态机只允许真实 IPC / aria2 结果驱动，不得用演示数据或乐观推断推进状态。
+- 界面与文档不得把中间态描述成下载成功。
+
+### IV. 登录态与凭据按密码本对待
+
+网盘登录凭证只存放在 `%APPDATA%\linkswift-desktop` 下的固定用户数据目录，绝不写进
+项目目录、日志、仓库或第三方 URL。
+
+- `GM_openInTab` 等会把 RPC 地址与 token 拼进第三方 URL 的路径必须拦截，改为进程内展示。
+- aria2 RPC 只监听回环地址，密钥随机生成并本地保存。
+- 日志与错误信息不得输出 Cookie、token、直链以外的凭证字段。
+
+### V. 只做被要求的最小改动
+
+按「不需要就不做 → 复用已有 → 标准库 → 平台原生 → 已装依赖 → 最少新代码」的顺序取舍；
+不为单实现写接口，不为不会变的配置写脚手架。
+
+- 网盘差异集中进 `src/shared/providers.js` 一张表，不在任务流程里分支。
+- 有意走捷径且已知上限时，留 `ponytail:` 注释写明上限与升级路径。
+- 复杂度必须先有真实需求支撑，否则记入 `deferred:` 而不是先写出来。
+
+### VI. 许可与署名不可回退
+
+仓库整体为 AGPL-3.0-or-later，必须整仓开源。`NOTICE` 保留 hmjz100、油小猴（上游脚本）与
+aria2（GPL-2.0-or-later）的署名与许可证副本；删除或弱化署名视为破坏性变更。
+
+### VII. 兼容优先于改名
+
+对外可见名称改为 Unidownload，但内部标识保持不变：`package.name` 仍为 `linkswift-desktop`，
+会话分区仍为 `persist:linkswift`，用户数据目录仍为 `%APPDATA%\linkswift-desktop`，
+预加载暴露的 `window.linkswift`、IPC 名称、aria2 会话与下载目录路径均不改。
+
+- 改内部标识前必须先验证历史任务、设置与登录态仍可载入，否则不做。
+
+## 技术约束
+
+- 技术栈固定为 Electron 44.8.0 + 原生渲染层，不迁移到其他框架，不引入 BT 等新领域功能。
+- jQuery、SweetAlert2、js-md5 及其 CSS 必须打包进应用本地注入，保证离线可用。
+- LinkSwift 必须注入页面主世界，`GM_*` shim（含未声明却被使用的 `GM_info`）为注入前置条件。
+- 隐藏窗口必须设 `backgroundThrottling: false`，否则定时器被钳到约 1 Hz。
+- 页面驱动只允许点真实 DOM（复选框、助手按钮），不得直接写框架内部状态。
+- 阿里 / 迅雷 / 移动云盘的分享取链在当前上游不可用，不得以猜测实现绕过。
+
+## 开发流程
+
+1. 新功能或需求变更先写规格与验收，再写实现。
+2. 改动按「设计事实 → 代码 → 单入口检查 → 真实下载验收」顺序推进。
+3. 中断、未完成的会话写 `HANDOFF.md`（先读 `C:\Users\ASUS\.agents\handoff-convention.md`）。
+4. 决策变更写 `docs/adr/`，计划与验收记录写 `docs/plans/`。
+5. 机器相关的坑写 `LESSONS.md`，一行一条，附识别方式与复跑命令。
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+本宪法优先于其他开发惯例。修改流程：改动以 ADR 或规格说明理由 → 同步更新本文件版本号
+→ 在同一轮内跑通 `npm run check` → 提交时说明变更点。语义化版本规则：原则增删或重定义为
+MAJOR，新增章节或实质扩展为 MINOR，措辞澄清与错别字为 PATCH。
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+所有改动在收尾前必须对照本宪法自审一遍；与本宪法冲突的做法必须先修宪法再改代码。
+
+**Version**: 1.0.0 | **Ratified**: 2026-10-19 | **Last Amended**: 2026-10-19
