@@ -53,7 +53,9 @@ const DIALOG_OUTCOMES = [
  */
 const PAGE_OUTCOMES = [
   [
-    /分享.*(取消|失效|删除|过期)|链接.*(失效|不存在|错误|无效)|来晚了|页面不存在/i,
+    // 迅雷 renders "失效时间：永久有效" on a healthy share, so a bare 失效 must
+    // not count; the wording has to say the share is gone.
+    /分享(的)?(文件|内容)?[^。\n]{0,12}(已|被)(取消|删除|屏蔽)|分享已失效|链接(已)?失效|链接(不存在|无效)|来晚了|页面不存在|分享(已)?过期/i,
     { code: 'link-invalid', message: '分享已失效：文件被取消、删除，或链接不完整。' },
   ],
   [
@@ -749,6 +751,13 @@ class Job {
         // transfer or a provider's own login page, is not a share page: running
         // the share steps on it only produces a bogus failure.
         if (this.state.phase === 'needs-human') return;
+        // 迅雷's share page has no aria2 mode at all: the only way to a direct link
+        // is to save the file into the user's drive first.
+        if (getProvider(this.link.provider)?.transferOnly) {
+          this.setState({ phase: 'extracting' });
+          this.handleTransferNeed();
+          return;
+        }
         this.setState({ phase: 'extracting' });
         this.window?.webContents.send(INTERNAL.command, {
           kind: 'run-driver',

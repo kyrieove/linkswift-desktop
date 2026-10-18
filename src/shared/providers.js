@@ -13,7 +13,8 @@
  *   | { do: 'click-text', text: string | string[], optional?: boolean, timeoutMs?: number }
  *   | { do: 'ensure-selection', selected: Selector, unselected: Selector, optional?: boolean }
  *   | { do: 'enter-folders', rowName: Selector, timeoutMs: number, maxDepth?: number }
- *   | { do: 'ensure-anchor', ancestor: string, addClass: string, create: string }
+ *   | { do: 'enter-folder', row?: Selector, timeoutMs?: number, maxDepth?: number, optional?: boolean }
+ *   | { do: 'ensure-anchor', ancestor: string, create: string, addClass?: string, probe?: string, timeoutMs?: number }
  *   | { do: 'fill', selector: Selector, value: string, optional?: boolean }
  *   | { do: 'sleep', ms: number }} Step
  *
@@ -30,6 +31,7 @@
  * @property {string | null} passcodeParam  Query parameter that unlocks the share, if any
  * @property {Step[]} steps
  * @property {Step[]} [transferSteps]  Run when the share refuses a large file
+ * @property {boolean} [transferOnly]  This provider's shares can only be saved
  * @property {string} [driveUrl]  The account's own drive, for the post-transfer step
  * @property {'cookie' | 'window'} [loginKind]  How this provider authenticates
  * @property {string} [loginUrl]  Where a window-login provider signs in
@@ -106,6 +108,7 @@ const BAIDU_STEPS = [
     do: 'ensure-anchor',
     ancestor: '.x-button-box',
     addClass: 'module-share-top-bar',
+    probe: '.g-dropdown-button.tools-more',
     create: '<div class="g-dropdown-button tools-more"></div>',
     timeoutMs: 30000,
   },
@@ -180,29 +183,32 @@ const UC_STEPS = [
   ...SEND_STEPS,
 ];
 
-/** 迅雷's share list is Vue, and it has no folder descent the script can follow. */
-const XUNLEI_STEPS = [
-  { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
+/**
+ * 迅雷's share page has no extraction path at all. Measured on a live share
+ * (2026-10-18): the assistant's dropdown offers only 「转存后下载」, no API / cURL /
+ * aria2 entry, so a direct link can only be produced from the user's own drive.
+ * The batch-action box is also `Share__batchActionsBox` while the script waits for
+ * `Share__batchActionBox` (no "s"), so the assistant does not mount on its own.
+ *
+ * The steps below therefore do the save, and `transferOnly` sends the job down the
+ * transfer branch instead of waiting for a link that never comes.
+ */
+const XUNLEI_TRANSFER_STEPS = [
   {
-    do: 'fill',
-    selector: ['input[placeholder*="提取码"]', 'input[placeholder*="密码"]'],
-    value: '{passcode}',
-    optional: true,
+    do: 'ensure-anchor',
+    ancestor: '[class*="batchActionsBox"]',
+    probe: '.pl-button',
+    create: '<div class="Share__batchActionBox--linkswift" style="display:inline-block"></div>',
+    timeoutMs: 20000,
   },
-  { do: 'sleep', ms: 800 },
-  {
-    do: 'ensure-selection',
-    selected: ['[class*="SourceListItem__item--"][class*="selected"]', '[class*="selected--"]'],
-    unselected: [
-      '[class*="SourceListItem__checkbox"]',
-      '[class*="Share__batchActionBox--"] [type="checkbox"]:not(:checked)',
-    ],
-    optional: true,
-  },
-  { do: 'sleep', ms: 500 },
-  { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
-  ...SEND_STEPS,
+  { do: 'wait-for', selector: ['.pl-button', '.pl-button-init'].join(','), timeoutMs: 30000 },
+  // Open the assistant, then take its only share-page action.
+  { do: 'click', selector: ['.pl-button', '.pl-button-init'] },
+  { do: 'click', selector: ['li.pl-button-save', '.pl-button-save'], timeoutMs: 10000 },
+  { do: 'sleep', ms: 4000 },
 ];
+
+const XUNLEI_STEPS = [...XUNLEI_TRANSFER_STEPS];
 
 /** @type {Record<string, Provider>} */
 const PROVIDERS = {
@@ -257,7 +263,10 @@ const PROVIDERS = {
     // cookie import cannot carry a login over; the app's own window has to own it.
     loginKind: 'window',
     loginUrl: 'https://pan.xunlei.com/',
-    driveUrl: 'https://pan.xunlei.com/?folderId=',
+    driveUrl: 'https://pan.xunlei.com/',
+    // Its share page cannot produce a direct link, so every job is a transfer.
+    transferOnly: true,
+    transferSteps: XUNLEI_TRANSFER_STEPS,
     experimental: true,
     steps: XUNLEI_STEPS,
   },

@@ -147,6 +147,17 @@ async function main() {
     assert(job.state.message.includes('下载助手'), '手动兜底要告诉用户点哪里');
   }
 
+  // 7b. 迅雷的分享页根本没有 aria2 入口，只能转存；没开自动转存就停在「需先转存」
+  {
+    const { job } = makeJob({
+      link: { raw: 'https://pan.xunlei.com/s/VNabc', provider: 'xunlei', shareId: 'VNabc', passcode: null },
+      allowTransfer: () => false,
+    });
+    job.handle({ kind: 'injected', href: 'https://pan.xunlei.com/s/VNabc', provider: 'xunlei' });
+    assert.strictEqual(job.state.phase, 'needs-human');
+    assert.strictEqual(job.state.reason, 'transfer');
+  }
+
   // 8. 文件夹里一个文件挂了，其余继续；全部停下来才算这个任务失败
   {
     const aria2 = require('../src/main/aria2');

@@ -247,13 +247,67 @@ async function runStep(step, passcode) {
       const outcome = await runInPage(`(() => {
         const anchor = document.querySelector(${JSON.stringify(step.ancestor)});
         if (!anchor) return { ok: false, reason: 'anchor not found' };
-        if (anchor.querySelector('.g-dropdown-button.tools-more')) return { ok: true, created: false };
-        anchor.parentElement?.classList.add(${JSON.stringify(step.addClass)});
+        if (${JSON.stringify(step.probe ?? '')} && anchor.querySelector(${JSON.stringify(step.probe ?? '')})) {
+          return { ok: true, created: false };
+        }
+        if (${JSON.stringify(step.addClass ?? '')}) {
+          anchor.parentElement?.classList.add(${JSON.stringify(step.addClass ?? '')});
+        }
         anchor.insertAdjacentHTML('beforeend', ${JSON.stringify(step.create)});
         return { ok: true, created: true };
       })()`);
       if (!outcome.ok) throw new Error(`无法恢复页面挂载点：${step.ancestor}`);
       return;
+    }
+
+    /**
+     * A folder row has to be opened before the script will extract from it. This
+     * is the Vue-shaped sibling of `enter-folders`: the row's `__vue__.info`
+     * carries the file kind, which beats guessing at class names.
+     */
+    case 'enter-folder': {
+      const maxDepth = step.maxDepth ?? 3;
+      const rowSelector = JSON.stringify(step.row ?? '[class*="SourceListItem__item--"]');
+      for (let depth = 0; depth < maxDepth; depth += 1) {
+        const listing = await runInPage(`(() => {
+          const rows = Array.from(document.querySelectorAll(${rowSelector}));
+          const infos = rows
+            .map((row) => (row.__vue__ && row.__vue__.info) || null)
+            .filter((info) => info && info.id);
+          return {
+            hasFile: infos.some((info) => info.kind === 'drive#file'),
+            folder: infos.find((info) => info.kind === 'drive#folder') || null,
+            signature: infos.map((info) => info.id).join(','),
+          };
+        })()`);
+        if (listing.hasFile || !listing.folder) return;
+
+        const opened = await runInPage(`(() => {
+          const rows = Array.from(document.querySelectorAll(${rowSelector}));
+          const row = rows.find(
+            (candidate) => candidate.__vue__ && candidate.__vue__.info && candidate.__vue__.info.id === ${JSON.stringify(listing.folder.id)},
+          );
+          if (!row) return false;
+          const target = row.querySelector('[class*="name"]') || row;
+          const base = { bubbles: true, cancelable: true, view: window };
+          for (const type of ['mousedown', 'mouseup', 'click', 'mousedown', 'mouseup', 'click', 'dblclick']) {
+            target.dispatchEvent(new MouseEvent(type, { ...base, detail: type === 'dblclick' ? 2 : 1 }));
+          }
+          return true;
+        })()`);
+        if (!opened) throw new Error('找不到文件夹所在的行');
+
+        const deadline = Date.now() + (step.timeoutMs ?? 20000);
+        for (;;) {
+          await sleep(POLL_INTERVAL_MS);
+          const signature = await runInPage(
+            `Array.from(document.querySelectorAll(${rowSelector})).map((row) => (row.__vue__ && row.__vue__.info ? row.__vue__.info.id : '')).join(',')`,
+          );
+          if (signature !== listing.signature) break;
+          if (Date.now() > deadline) throw new Error(`进入「${listing.folder.name || listing.folder.id}」超时`);
+        }
+      }
+      throw new Error('文件夹嵌套太深，停下了');
     }
 
     case 'wait-for':
