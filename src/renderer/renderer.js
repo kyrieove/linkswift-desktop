@@ -111,6 +111,7 @@
   // Host-owned replacement data
   const jobs = new Map();
   const jobOrder = [];
+  let lastListKey = null;
   let toastTimer = null;
   let submitting = false;
   let saving = false;
@@ -302,6 +303,14 @@
     return '已交给剪贴板或浏览器';
   }
 
+  /** Map a job phase onto the colour token styles.css defines. */
+  function statusTone(phase) {
+    if (phase === 'needs-human') return 'human';
+    if (phase === 'failed') return 'failed';
+    if (phase === 'downloading' || phase === 'done') return phase;
+    return 'idle';
+  }
+
   function getJobStatusLabel(j) {
     const phase = j.state && j.state.phase;
     if (phase === 'needs-human') return humanInfo(j).label;
@@ -482,7 +491,17 @@
     const focusedId = document.activeElement && document.activeElement.dataset
       ? document.activeElement.dataset.jobId || null
       : null;
-    const scrollTop = rows ? rows.scrollTop : 0;
+    // A changed result set (filter, search, sort) is a different list: keeping the
+    // old offset there leaves row 0 clipped above the viewport.
+    const listKey = JSON.stringify({
+      phase: viewState.phaseFilter,
+      provider: viewState.providerFilter,
+      query: viewState.query,
+      sort: viewState.sort,
+    });
+    const listChanged = listKey !== lastListKey;
+    lastListKey = listKey;
+    const scrollTop = listChanged || !rows ? 0 : rows.scrollTop;
     jobListContainer.replaceChildren();
 
     for (const j of filtered) {
@@ -525,7 +544,9 @@
       const title = el('div', 'filename', name);
       title.title = name;
 
-      const status = el('span', 'status ' + phase);
+      // The stylesheet colours the row by a short token, not by the raw phase
+      // name (`needs-human` would need an escaped class and never matched).
+      const status = el('span', 'status ' + statusTone(phase));
       status.append(icon(getJobStatusIcon(j)), document.createTextNode(getJobStatusLabel(j)));
       const statusSvg = status.querySelector('svg');
       if (statusSvg) statusSvg.style.cssText = 'width:11px;height:11px';
@@ -584,24 +605,38 @@
       jobListContainer.append(row);
     }
 
-    // Empty state
+    // Empty state. The static #jobs-empty element is kept hidden: this block is
+    // the only empty message, so two of them can never show at once.
     const emptyNode = $('#jobs-empty');
+    if (emptyNode) emptyNode.hidden = true;
     if (!filtered.length) {
-      if (emptyNode) emptyNode.hidden = false;
+      const filtering = Boolean(viewState.query) || viewState.providerFilter !== null || viewState.phaseFilter !== 'all';
       const emptyDiv = el('div', 'empty');
       emptyDiv.append(
         icon('search'),
-        el('h3', '', '这里还没有任务'),
-        el('p', '', $('#search') && $('#search').value ? '换一个关键词，或者清空搜索。' : '添加一个分享链接，开始你的第一个下载。')
+        el('h3', '', filtering ? '这个筛选下没有任务' : '这里还没有任务'),
+        el(
+          'p',
+          '',
+          filtering
+            ? '换一个状态或网盘来源，或者清空筛选。'
+            : '添加一个分享链接，开始你的第一个下载。'
+        )
       );
-      if ($('#search') && $('#search').value) {
-        emptyDiv.append(btn('清空搜索', null, () => { $('#search').value = ''; viewState.query = ''; render(); }, 'button secondary'));
+      if (filtering) {
+        emptyDiv.append(
+          btn('清空筛选', null, () => {
+            if ($('#search')) $('#search').value = '';
+            viewState.query = '';
+            viewState.providerFilter = null;
+            viewState.phaseFilter = 'all';
+            render();
+          }, 'button secondary')
+        );
       } else {
         emptyDiv.append(btn('新建任务', null, openCreate, 'button secondary'));
       }
       jobListContainer.append(emptyDiv);
-    } else {
-      if (emptyNode) emptyNode.hidden = true;
     }
 
     // Selection bar & summary
@@ -640,10 +675,14 @@
       if (unitNode) unitNode.textContent = (speedParts[1] || 'B') + '/s';
     }
 
-    // Task summary
-    const doneCount = allJobs.filter((j) => j.state && j.state.phase === 'done').length;
+    // Task summary. "已完成" must only count jobs with local bytes; a job that was
+    // handed to the clipboard or the browser is 已投递, not 已完成.
+    const doneCount = allJobs.filter((j) => j.state && j.state.phase === 'done' && doneOutcome(j) === 'aria2').length;
+    const deliveredCount = allJobs.filter((j) => j.state && j.state.phase === 'done' && !doneOutcome(j)).length;
     if ($('#task-summary')) {
-      $('#task-summary').textContent = `${allJobs.length} 个任务 · ${activeDownloads.length} 个下载中 · ${doneCount} 个已完成`;
+      $('#task-summary').textContent =
+        `${allJobs.length} 个任务 · ${activeDownloads.length} 个下载中 · ${doneCount} 个已完成` +
+        (deliveredCount > 0 ? ` · ${deliveredCount} 个已投递` : '');
     }
 
     if (viewState.page === 'tasks' && $('#page-title')) {
@@ -674,6 +713,12 @@
     const drawer = $('#drawer');
     if (drawer) drawer.hidden = false;
     renderDetails();
+    // Move focus into the panel so a keyboard user lands in what just opened;
+    // Escape then returns focus to the row they came from.
+    if (drawer) {
+      const first = drawer.querySelector('button') || drawer;
+      if (first) first.focus({ preventScroll: true });
+    }
   }
 
   function closeDetails() {
@@ -937,7 +982,9 @@
     $$('.rail [data-page]').forEach((b) => {
       const active = b.dataset.page === next;
       b.classList.toggle('active', active);
-      b.setAttribute('aria-current', active ? 'page' : 'false');
+      // `aria-current="false"` is not a valid token; the attribute is removed.
+      if (active) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
     });
 
     const copy = {
@@ -1074,6 +1121,9 @@
       if ($('#footer-directory')) {
         $('#footer-directory').textContent = (currentSettings.aria2 && currentSettings.aria2.dir) || '下载目录';
       }
+      // A later successful save must clear the banner left by an earlier failure.
+      const errorNode = $('#settings-error');
+      if (errorNode) errorNode.hidden = true;
       notify('设置已保存');
       const statusNode = $('#settings-status');
       if (statusNode) {
@@ -1114,6 +1164,12 @@
     if (input) input.focus();
   }
 
+  /** @returns {string | null} the delivery picked in the new-task dialog */
+  function selectedDelivery() {
+    const picked = document.querySelector('input[name="new-delivery"]:checked');
+    return picked && picked.value ? picked.value : null;
+  }
+
   async function submitTask(raw) {
     if (submitting) return;
     const text = String(raw || '').trim();
@@ -1134,6 +1190,12 @@
     }
 
     try {
+      // The dialog's delivery choice is real: it becomes the saved global setting
+      // before the job is submitted, because that is what the host reads.
+      const picked = selectedDelivery();
+      if (picked && picked !== currentSettings.delivery) {
+        currentSettings = await api.setSettings(Object.assign({}, currentSettings, { delivery: picked }));
+      }
       const result = await api.submit(text);
       if (result && result.ok) {
         const input = $('#link-input') || $('#share');
@@ -1167,24 +1229,33 @@
 
   /* ---------------------------------------------------------------- Batch Operations --- */
 
+  /** The bridge answers pause/resume with a bare boolean (ipc.js passes
+   *  JobManager.pause/resume straight through), so only `true` counts as done. */
+  function succeeded(res) {
+    if (res === false) return false;
+    if (res && typeof res === 'object' && res.ok === false) return false;
+    return true;
+  }
+
   async function batchPause() {
-    const activeJobs = Array.from(jobs.values()).filter((j) => j.state && j.state.phase === 'downloading');
+    // Only what the user can see: a provider or status filter must not make the
+    // button pause rows that are not on screen.
+    const activeJobs = visibleJobs().filter((j) => j.state && j.state.phase === 'downloading');
     if (!activeJobs.length) {
-      notify('当前没有正在下载的任务');
+      notify('当前列表里没有正在下载的任务');
       return;
     }
     let success = 0;
     let failed = 0;
     for (const j of activeJobs) {
       try {
-        const res = await api.pause(j.id);
-        if (res !== false && (!res || res.ok !== false)) success++;
+        if (succeeded(await api.pause(j.id))) success++;
         else failed++;
       } catch {
         failed++;
       }
     }
-    notify(failed > 0 ? `已暂停 ${success} 个任务，${failed} 个失败` : `已暂停全部 ${success} 个下载任务`);
+    notify(failed > 0 ? `已暂停 ${success} 个任务，${failed} 个失败` : `已暂停 ${success} 个下载任务`);
   }
 
   async function batchSelected(action) {
@@ -1197,7 +1268,11 @@
     } else if (action === 'resume') {
       targetJobs = ids.map((id) => jobs.get(id)).filter((j) => j && j.state && j.state.phase === 'paused');
     } else if (action === 'cancel') {
-      targetJobs = ids.map((id) => jobs.get(id)).filter((j) => j && j.state && !['done'].includes(j.state.phase));
+      // A settled job (done/failed/cancelled) refuses cancel in the host, so it
+      // must not be offered here either.
+      targetJobs = ids
+        .map((id) => jobs.get(id))
+        .filter((j) => j && j.state && !['done', 'failed'].includes(j.state.phase));
     }
 
     if (!targetJobs.length) {
@@ -1214,7 +1289,7 @@
         else if (action === 'resume') res = await api.resume(j.id);
         else if (action === 'cancel') res = await api.cancel(j.id);
 
-        if (res !== false && (!res || res.ok !== false)) success++;
+        if (succeeded(res)) success++;
         else failed++;
       } catch {
         failed++;
@@ -1268,13 +1343,19 @@
     if (!job || typeof job !== 'object' || !job.id) return;
     const id = job.id;
     if (!jobs.has(id)) jobOrder.unshift(id);
+    const previousPhase = jobs.has(id) ? jobs.get(id).state && jobs.get(id).state.phase : null;
     jobs.set(id, job);
 
     render();
+    // A retried job comes back with a new id, so drop the drawer instead of
+    // leaving it pointed at a job that no longer exists.
     if (viewState.detailId === id) renderDetails();
+    else if (viewState.detailId !== null && !jobs.has(viewState.detailId)) closeDetails();
 
+    // Announce a phase change only. A downloading job pushes progress every
+    // second, and announcing that would flood a screen reader.
     const live = $('#live-region');
-    if (live) {
+    if (live && previousPhase !== job.state.phase) {
       const pLabel = (job.link && PROVIDER_LABELS[job.link.provider]) || '任务';
       const sId = (job.link && job.link.shareId) || '';
       live.textContent = `${pLabel} ${sId}：${getJobStatusLabel(job)}`;
