@@ -17,6 +17,9 @@ const path = require('node:path');
 /** @type {Settings} */
 const DEFAULT_SETTINGS = {
   delivery: 'aria2',
+  // The app ships aria2 and starts it itself; a user who already runs one can
+  // point the app at that instead.
+  aria2Mode: 'builtin',
   aria2: {
     domain: 'http://localhost',
     port: '6800',

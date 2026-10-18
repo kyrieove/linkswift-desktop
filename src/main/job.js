@@ -7,7 +7,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
 const { INTERNAL } = require('../shared/protocol');
-const { getProvider, parseShareLink } = require('../shared/providers');
+const { PROVIDERS, getProvider, parseShareLink } = require('../shared/providers');
 const aria2 = require('./aria2');
 const { performChromeLogin } = require('./chrome-login');
 
@@ -39,9 +39,10 @@ const DIALOG_OUTCOMES = [
     /请先勾选|请打开文件夹/,
     { fail: 'no-files', message: '没能在页面上勾选到文件。分享页结构可能变了。' },
   ],
-  [/请先登录|需要登录|超出游客|31001/, { human: 'login' }],
+  [/请先登录|需要登录|超出游客|31001|登录已过期|凭证已过期|令牌已过期/, { human: 'login' }],
   [/提取码|请输入密码/, { human: 'passcode' }],
   [/验证码|安全验证/, { human: 'captcha' }],
+  [/超过\s*50\s*(M|MB|兆)|大小超过可获取限制|保存到网盘/, { transfer: true }],
 ];
 
 /**
@@ -67,12 +68,12 @@ const PAGE_OUTCOMES = [
     /超过\s*50\s*(M|MB|兆)|文件(过大|太大)|需(要|先)[^。]{0,12}转存|请[^。]{0,12}保存到网盘/,
     {
       code: 'needs-transfer',
-      message: '这个文件超过 50MB，需要先转存到你自己的网盘。设置里勾选「允许自动转存」后重试。',
+      message: '这个文件超过 50MB，百度不允许直接从分享页取直链，需要先转存到你自己的网盘。',
     },
   ],
   [
     /访问.*频繁|操作.*频繁|请稍后|限流/,
-    { code: 'rate-limited', message: '百度暂时限流了这个账号，等几分钟再试。' },
+    { code: 'rate-limited', message: '网盘暂时限流了这个账号，等几分钟再试。' },
   ],
 ];
 
@@ -404,19 +405,32 @@ async function proxyRequest({ url, method, headers, body }, ses) {
 class Job {
   /**
    * @param {{
+   *   id?: string,
+   *   createdAt?: number,
    *   link: import('../shared/protocol').ShareLink,
-   *   deliver: (files: import('../shared/protocol').ExtractedFile[]) => Promise<void>,
+   *   deliver: (files: import('../shared/protocol').ExtractedFile[]) => Promise<{
+   *     delivery: string,
+   *     files: import('../shared/protocol').ExtractedFile[],
+   *     gids?: Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>,
+   *     config?: import('../shared/protocol').Aria2Config,
+   *   }>,
    *   emit: (job: Job) => void,
    *   onDone: (contentsId: number) => void,
+   *   persist?: (job: Job) => void,
+   *   allowTransfer?: () => boolean,
    *   session?: import('electron').Session,
    * }} options
    */
-  constructor({ link, deliver, emit, onDone, session }) {
-    this.id = randomUUID();
+  constructor({ id, createdAt, link, deliver, emit, onDone, persist, allowTransfer, config, session }) {
+    this.id = id ?? randomUUID();
+    this.createdAt = createdAt ?? Date.now();
     this.link = link;
     this.deliver = deliver;
     this.emit = emit;
     this.onDone = onDone;
+    this.persist = persist ?? (() => {});
+    this.allowTransfer = allowTransfer ?? (() => false);
+    this.config = config ?? (() => null);
     this.session = session;
 
     /** @type {import('../shared/protocol').JobPhase} */
@@ -427,6 +441,20 @@ class Job {
     this.settled = false;
     /** @type {NodeJS.Timeout | null} */
     this.pollTimer = null;
+    /** @type {NodeJS.Timeout | null} */
+    this.flushTimer = null;
+    /** @type {import('../shared/protocol').ExtractedFile[]} */
+    this.pendingFiles = [];
+    /** @type {import('../shared/protocol').ExtractedFile[]} */
+    this.files = [];
+    /** @type {Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>} */
+    this.gids = [];
+    /** @type {import('../shared/protocol').DownloadProgress[]} */
+    this.progress = [];
+    /** @type {import('../shared/protocol').Aria2Config | null} */
+    this.aria2Config = null;
+    this.readded = false;
+    this.delivering = false;
   }
 
   stopPolling() {
@@ -434,17 +462,26 @@ class Job {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
   }
 
   /** @returns {import('../shared/protocol').Job} */
   snapshot() {
-    return { id: this.id, link: this.link, state: this.state };
+    const snapshot = { id: this.id, link: this.link, state: this.state, createdAt: this.createdAt };
+    return snapshot;
   }
 
   /** @param {import('../shared/protocol').JobPhase} state */
   setState(state) {
+    const changed = state.phase !== this.state.phase;
     this.state = state;
     this.emit(this);
+    // The progress numbers tick once a second; only a phase change is worth a
+    // disk write, except for the two terminal states.
+    if (changed || state.phase === 'done' || state.phase === 'failed') this.persist(this);
   }
 
   /**
@@ -456,19 +493,32 @@ class Job {
     if (this.settled) return;
     this.stopPolling();
     this.settled = true;
-    this.setState({ phase: 'failed', code, message, detail });
+    // A cancelled job is over on purpose; its half-built progress is noise.
+    const withProgress = this.progress.length > 0 && code !== 'cancelled';
+    this.setState({
+      phase: 'failed',
+      code,
+      message,
+      detail,
+      ...(this.files.length ? { files: this.files } : {}),
+      ...(withProgress ? { progress: this.progress } : {}),
+    });
     if (!DEBUG) this.close();
   }
 
-  /** @param {import('../shared/protocol').HumanReason} reason */
-  needsHuman(reason) {
+  /**
+   * @param {import('../shared/protocol').HumanReason} reason
+   * @param {{ message?: string, detail?: string }} [extra]
+   */
+  needsHuman(reason, extra = {}) {
     if (this.settled) return;
     if (this.state.phase === 'needs-human' && this.state.reason === reason) return;
-    this.setState({ phase: 'needs-human', reason });
-    if (reason === 'login') {
+    this.setState({ phase: 'needs-human', reason, ...extra });
+    if (reason === 'login' && getProvider(this.link.provider)?.loginKind === 'cookie') {
       this.handleChromeLogin();
     } else {
       this.window?.show();
+      this.window?.focus();
     }
   }
 
@@ -617,6 +667,12 @@ class Job {
 
     switch (observation.kind) {
       case 'injected':
+        // After a transfer the window is showing the user's own drive, where the
+        // script is live but the share steps do not apply.
+        if (this.state.phase === 'needs-human' && this.state.reason === 'manual') {
+          this.setState(this.state);
+          return;
+        }
         this.setState({ phase: 'extracting' });
         this.window?.webContents.send(INTERNAL.command, {
           kind: 'run-driver',
@@ -627,13 +683,22 @@ class Job {
 
       case 'dialog': {
         const outcome = DIALOG_OUTCOMES.find(([pattern]) => pattern.test(observation.text))?.[1];
-        if (outcome?.human) this.needsHuman(outcome.human);
+        if (outcome?.human) this.needsHuman(outcome.human, { detail: observation.text });
         else if (outcome?.fail) this.fail(outcome.fail, outcome.message, observation.text);
+        else if (outcome?.transfer) this.handleTransferNeed(observation.text);
         return;
       }
 
       case 'driver-result':
-        if (!observation.ok) this.failDriver(observation);
+        if (!observation.ok) {
+          this.failDriver(observation);
+          return;
+        }
+        if (observation.mode === 'transfer') {
+          this.afterTransfer();
+          return;
+        }
+        this.scheduleFlush(400);
         return;
 
       case 'http':
@@ -650,6 +715,65 @@ class Job {
 
       default:
         return;
+    }
+  }
+
+  /**
+   * A share file over 50MB has no direct link at all. Where the provider has a
+   * save-into-my-drive step and the user allowed it, do that from here; otherwise
+   * say what would unblock it instead of reporting a network fault.
+   *
+   * @param {string} [detail]
+   */
+  handleTransferNeed(detail) {
+    const provider = getProvider(this.link.provider);
+    if (!provider?.transferSteps?.length) {
+      this.fail(
+        'needs-transfer',
+        `${provider?.label ?? this.link.provider} 不允许直接取这个大文件的直链，需要先转存到你自己的网盘。`,
+        detail,
+      );
+      return;
+    }
+    if (!this.allowTransfer()) {
+      this.needsHuman('transfer', { detail });
+      return;
+    }
+    this.beginTransfer();
+  }
+
+  beginTransfer() {
+    if (!this.window || this.window.isDestroyed()) {
+      this.fail('needs-transfer', '转存需要页面还开着，但窗口已经关闭。请重新提交这个链接。');
+      return;
+    }
+    this.setState({ phase: 'extracting' });
+    this.window.webContents.send(INTERNAL.command, {
+      kind: 'run-driver',
+      provider: this.link.provider,
+      passcode: this.link.passcode,
+      mode: 'transfer',
+    });
+  }
+
+  /**
+   * The file is in the user's drive now, and the share page can never hand out
+   * its direct link. Move the window to the drive, where the script is live, and
+   * leave the one click that the app cannot make on its own.
+   */
+  async afterTransfer() {
+    const provider = getProvider(this.link.provider);
+    const target = provider?.driveUrl;
+    this.needsHuman('manual', {
+      message: '已把文件保存到你的网盘。窗口已切到「我的网盘」，选中这个文件，点「下载助手」→「Aria2 下载」，剩下的交给程序。',
+    });
+    if (!target || !this.window || this.window.isDestroyed()) return;
+    try {
+      await this.window.loadURL(target);
+      this.window.show();
+      this.window.focus();
+    } catch (error) {
+      console.warn(`[job ${this.id}] cannot open the drive page: ${error.message}`);
     }
   }
 
@@ -675,7 +799,7 @@ class Job {
     }
 
     const excerpt = pageText.replace(/\s+/g, ' ').trim().slice(0, 400);
-    if (/请先登录|需要登录|登录后/.test(excerpt)) {
+    if (/请先登录|需要登录|登录后|登录.*(失效|过期|已退出)|重新登录/.test(excerpt)) {
       this.needsHuman('login');
       return;
     }
@@ -692,8 +816,19 @@ class Job {
       .filter(Boolean)
       .join('\n');
 
+    const provider = getProvider(this.link.provider);
+    const experimental = Boolean(provider?.experimental);
     const outcome = PAGE_OUTCOMES.find(([pattern]) => pattern.test(excerpt))?.[1];
-    if (outcome) {
+    if (outcome?.code === 'needs-transfer') {
+      this.handleTransferNeed(detail);
+      return;
+    }
+    // A page that says the file is gone says so in its own words. A page that is
+    // merely missing a button proves nothing on a provider whose selectors were
+    // transcribed instead of measured.
+    const definitive =
+      outcome && ['link-invalid', 'file-missing', 'passcode-wrong'].includes(outcome.code);
+    if (outcome && (!experimental || definitive)) {
       this.fail(outcome.code, `${outcome.message}（${step}）`, detail);
       return;
     }
@@ -705,6 +840,16 @@ class Job {
         `页面正常打开了，但脚本没弹出取链结果，通常是网盘接口临时拒绝；点「打开窗口」看看，或稍后重试（${step}）`,
         detail,
       );
+      return;
+    }
+    // A provider whose selectors were transcribed rather than observed gets one
+    // more chance: keep the window up, let the user make the click, and catch the
+    // aria2 push from here either way.
+    if (experimental) {
+      this.needsHuman('manual', {
+        message: `自动点击没找到地方点（${step}）。窗口已经打开，请在里面点「下载助手」→「Aria2 下载」→「推送地址到 Aria2 下载器」，程序会接住后面的下载。`,
+        detail,
+      });
       return;
     }
     this.fail('upstream-redesigned', `页面上没找到该点的东西，上游可能改版了（${step}）`, detail);
@@ -730,7 +875,7 @@ class Job {
         text: JSON.stringify({ id: observation.id, jsonrpc: '2.0', result: `linkswift-${this.id}` }),
         headers: '',
       });
-      await this.accept(files);
+      this.queueFiles(files);
       return;
     }
 
@@ -793,98 +938,55 @@ class Job {
   }
 
   /**
-   * @param {import('../shared/protocol').Aria2Config} config
-   * @param {Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>} gids
+   * The script pushes each file of a folder with its own aria2.addUri, so the
+   * pushes arrive one at a time and stop when the window goes away. Collect them
+   * for a moment and deliver once, or a folder downloads only its first file.
+   *
    * @param {import('../shared/protocol').ExtractedFile[]} files
-   * @param {import('../shared/protocol').DownloadProgress[]} progressList
    */
-  startPolling(config, gids, files, progressList) {
-    this.stopPolling();
-    let active = true;
+  queueFiles(files) {
+    if (this.settled) return;
+    for (const file of files) {
+      if (!this.pendingFiles.some((queued) => queued.url === file.url)) this.pendingFiles.push(file);
+    }
+    if (this.state.phase === 'loading' || this.state.phase === 'extracting') {
+      this.setState({ phase: 'linked', files: this.pendingFiles.slice() });
+    }
+    this.scheduleFlush(1500);
+  }
 
-    const poll = async () => {
-      if (!active || this.settled) return;
-      try {
-        for (let i = 0; i < gids.length; i++) {
-          const { gid, file } = gids[i];
-          const s = await aria2.tellStatus(config, gid);
-          if (DEBUG) {
-            console.log(
-              `[DBG job ${this.id}] tellStatus(${gid}): status=${s.status} ${s.completedLength}/${s.totalLength} speed=${s.downloadSpeed} conn=${s.connections}`
-            );
-          }
-          progressList[i] = {
-            gid,
-            name: file.name,
-            status: s.status,
-            totalLength: parseInt(s.totalLength || '0', 10),
-            completedLength: parseInt(s.completedLength || '0', 10),
-            downloadSpeed: parseInt(s.downloadSpeed || '0', 10),
-            connections: parseInt(s.connections || '0', 10),
-            errorCode: s.errorCode || null,
-            errorMessage: s.errorMessage || null,
-          };
-        }
+  /** @param {number} ms */
+  scheduleFlush(ms) {
+    if (this.settled) return;
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flush();
+    }, ms);
+  }
 
-        const failedItem = progressList.find((p) => p.status === 'error');
-        if (failedItem) {
-          active = false;
-          this.stopPolling();
-          this.settled = true;
-          const err = describeAria2Error(failedItem.errorCode, failedItem.errorMessage);
-          this.setState({
-            phase: 'failed',
-            code: 'delivery',
-            message: err.message,
-            detail: err.detail,
-            progress: progressList,
-          });
-          return;
-        }
-
-        const allComplete =
-          progressList.length > 0 && progressList.every((p) => p.status === 'complete');
-        if (allComplete) {
-          active = false;
-          this.stopPolling();
-          this.settled = true;
-          this.setState({
-            phase: 'done',
-            files,
-            progress: progressList,
-          });
-          return;
-        }
-
-        this.setState({
-          phase: 'downloading',
-          files,
-          progress: [...progressList],
-        });
-      } catch (err) {
-        if (DEBUG) {
-          console.warn(`[DBG job ${this.id}] tellStatus error: ${err.message}`);
-        }
-      }
-    };
-
-    poll();
-    this.pollTimer = setInterval(poll, 1000);
+  flush() {
+    if (this.settled || this.delivering || !this.pendingFiles.length) return;
+    const files = this.pendingFiles.slice();
+    this.pendingFiles = [];
+    this.delivering = true;
+    this.deliverNow(files).finally(() => {
+      this.delivering = false;
+    });
   }
 
   /** @param {import('../shared/protocol').ExtractedFile[]} files */
-  async accept(files) {
-    if (this.settled) return;
+  async deliverNow(files) {
+    this.files = files;
     this.close();
-    this.setState({ phase: 'delivering' });
+    this.setState({ phase: 'delivering', files });
     try {
       const result = await this.deliver(files);
-      if (!result || result.delivery !== 'aria2') {
+      if (!result || result.delivery !== 'aria2' || !result.gids?.length) {
         this.settled = true;
         this.setState({ phase: 'done', files });
         return;
       }
-
       const progressList = result.gids.map(({ file, gid }) => ({
         gid,
         name: file.name,
@@ -896,12 +998,206 @@ class Job {
         errorCode: null,
         errorMessage: null,
       }));
+      this.files = files;
+      this.gids = result.gids;
+      this.progress = progressList;
+      this.aria2Config = result.config;
       this.setState({ phase: 'downloading', files, progress: progressList });
-      this.startPolling(result.config, result.gids, files, progressList);
+      this.startPolling();
     } catch (error) {
       this.settled = true;
-      this.setState({ phase: 'failed', code: 'delivery', message: error.message });
+      this.setState({
+        phase: 'failed',
+        code: error.code === 'aria2-down' ? 'aria2-down' : 'delivery',
+        message: error.message,
+        files,
+      });
     }
+  }
+
+  /** aria2 may have lost the GID across its own restart; push the URI once more. */
+  async readd() {
+    if (this.readded || !this.aria2Config || !this.files.length) {
+      this.settled = true;
+      this.stopPolling();
+      this.setState({
+        phase: 'failed',
+        code: 'link-expired',
+        message: 'aria2 里找不到这个任务了，直链可能已经过期。点「重新取链」重新解析一次这个分享链接。',
+        files: this.files,
+        progress: this.progress,
+      });
+      return false;
+    }
+    this.readded = true;
+    try {
+      const gids = [];
+      for (const file of this.files) {
+        gids.push({ file, gid: await aria2.addUri(this.aria2Config, file) });
+      }
+      this.gids = gids;
+      this.progress = gids.map(({ file, gid }) => ({
+        gid,
+        name: file.name,
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      }));
+      return true;
+    } catch (error) {
+      this.settled = true;
+      this.stopPolling();
+      this.setState({
+        phase: 'failed',
+        code: 'link-expired',
+        message: `重新提交直链失败（${error.message}）。点「重新取链」重新解析一次这个分享链接。`,
+        files: this.files,
+        progress: this.progress,
+      });
+      return false;
+    }
+  }
+
+  startPolling() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    const tick = async () => {
+      if (this.settled || !this.aria2Config) return;
+      try {
+        for (let index = 0; index < this.gids.length; index++) {
+          const { gid, file } = this.gids[index];
+          const status = await aria2.findGid(this.aria2Config, gid);
+          if (!status) {
+            await this.readd();
+            return;
+          }
+          if (DEBUG) {
+            console.log(
+              `[DBG job ${this.id}] tellStatus(${gid}): status=${status.status} ${status.completedLength}/${status.totalLength} speed=${status.downloadSpeed} conn=${status.connections}`,
+            );
+          }
+          this.progress[index] = {
+            gid,
+            name: file.name,
+            status: status.status,
+            totalLength: parseInt(status.totalLength || '0', 10),
+            completedLength: parseInt(status.completedLength || '0', 10),
+            downloadSpeed: parseInt(status.downloadSpeed || '0', 10),
+            connections: parseInt(status.connections || '0', 10),
+            errorCode: status.errorCode || null,
+            errorMessage: status.errorMessage || null,
+          };
+        }
+
+        const failedItem = this.progress.find((item) => item.status === 'error');
+        if (failedItem) {
+          this.stopPolling();
+          this.settled = true;
+          const described = describeAria2Error(failedItem.errorCode, failedItem.errorMessage);
+          this.setState({
+            phase: 'failed',
+            code: 'delivery',
+            message: described.message,
+            detail: described.detail,
+            files: this.files,
+            progress: this.progress,
+          });
+          return;
+        }
+
+        if (this.progress.length > 0 && this.progress.every((item) => item.status === 'complete')) {
+          this.stopPolling();
+          this.settled = true;
+          this.setState({ phase: 'done', files: this.files, progress: this.progress });
+          return;
+        }
+
+        const paused = this.progress.every((item) => item.status === 'paused');
+        this.setState({
+          phase: paused ? 'paused' : 'downloading',
+          files: this.files,
+          progress: this.progress.slice(),
+        });
+      } catch (error) {
+        if (DEBUG) console.warn(`[DBG job ${this.id}] tellStatus error: ${error.message}`);
+      }
+    };
+
+    tick();
+    this.pollTimer = setInterval(tick, 1000);
+  }
+
+  /** @returns {Promise<boolean>} */
+  async pause() {
+    if (!this.aria2Config || !this.gids.length) return false;
+    if (this.state.phase !== 'downloading') return false;
+    for (const { gid } of this.gids) await aria2.pause(this.aria2Config, gid).catch(() => {});
+    this.setState({ phase: 'paused', files: this.files, progress: this.progress.slice() });
+    return true;
+  }
+
+  /**
+   * Two different things resume. A paused download unpauses in place; an errored
+   * one is pushed again, and aria2 continues from the bytes the `.aria2` control
+   * file already accounts for.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async resume() {
+    if (this.state.phase === 'paused') {
+      if (!this.aria2Config) return false;
+      for (const { gid } of this.gids) await aria2.unpause(this.aria2Config, gid).catch(() => {});
+      this.setState({ phase: 'downloading', files: this.files, progress: this.progress.slice() });
+      return true;
+    }
+    if (this.state.phase !== 'failed') return false;
+    const files = this.state.files ?? [];
+    const config = this.aria2Config ?? this.config?.() ?? null;
+    if (!files.length || !config) return false;
+
+    this.settled = false;
+    this.readded = false;
+    this.aria2Config = config;
+    try {
+      const gids = [];
+      for (const file of files) gids.push({ file, gid: await aria2.addUri(config, file) });
+      this.files = files;
+      this.gids = gids;
+      const progress = gids.map(({ file, gid }) => ({
+        gid,
+        name: file.name,
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      }));
+      this.progress = progress;
+      this.setState({ phase: 'downloading', files, progress });
+      this.startPolling();
+      return true;
+    } catch (error) {
+      this.settled = true;
+      this.setState({ phase: 'failed', code: 'delivery', message: error.message, files });
+      return false;
+    }
+  }
+
+  async cancel() {
+    if (this.settled) return;
+    this.stopPolling();
+    if (this.aria2Config) {
+      for (const { gid } of this.gids) await aria2.remove(this.aria2Config, gid).catch(() => {});
+    }
+    this.fail('cancelled', '任务已取消。');
   }
 }
 
@@ -918,9 +1214,11 @@ class JobManager {
    *   partition: string,
    *   preloadPath: string,
    *   emit: (job: import('../shared/protocol').Job) => void,
+   *   daemon: import('./aria2-daemon').Aria2Daemon,
+   *   tasks: import('./task-store').TaskStore,
    * }} options
    */
-  constructor({ store, userscript, vendor, resources, partition, preloadPath, emit }) {
+  constructor({ store, userscript, vendor, resources, partition, preloadPath, emit, daemon, tasks }) {
     this.store = store;
     this.userscript = userscript;
     this.vendor = vendor;
@@ -928,6 +1226,8 @@ class JobManager {
     this.partition = partition;
     this.preloadPath = preloadPath;
     this.emit = emit;
+    this.daemon = daemon;
+    this.tasks = tasks;
 
     /** @type {Map<string, Job>} */
     this.jobs = new Map();
@@ -948,9 +1248,27 @@ class JobManager {
     });
   }
 
+  /** The aria2 every new download goes to: the bundled one, or the user's own. */
+  aria2Config() {
+    const settings = this.store.getSettings();
+    if (settings.aria2Mode === 'external') return settings.aria2;
+    const config = this.daemon.config();
+    // The bundled aria2 keeps running across a settings change, so the download
+    // directory is passed per download instead of only at spawn time.
+    return { ...config, dir: settings.aria2.dir?.trim() || this.daemon.dir || '' };
+  }
+
+  aria2Status() {
+    const settings = this.store.getSettings();
+    if (settings.aria2Mode === 'external') {
+      return { mode: 'external', running: true, port: null, version: null, error: null };
+    }
+    return this.daemon.status();
+  }
+
   buildBoot() {
     const script = this.userscript.get();
-    const settings = this.store.getSettings();
+    const config = this.aria2Config();
 
     // Seed before the snapshot. The userscript merges its own defaults over
     // whatever it finds, and for primitives it keeps what it found.
@@ -961,11 +1279,11 @@ class JobManager {
     });
     this.store.setValue('setting_aria2_rpc', [
       {
-        domain: settings.aria2.domain,
-        port: settings.aria2.port,
-        path: settings.aria2.path,
-        token: settings.aria2.token,
-        dir: settings.aria2.dir,
+        domain: config.domain,
+        port: config.port,
+        path: config.path,
+        token: config.token,
+        dir: config.dir,
         default: true,
       },
     ]);
@@ -986,16 +1304,12 @@ class JobManager {
    */
   submit(raw) {
     const link = parseShareLink(raw);
-    if (!link) return { ok: false, message: '看不懂这个链接。只支持夸克和百度的分享链接。' };
+    if (!link) {
+      const names = Object.values(PROVIDERS).map((provider) => provider.label).join('、');
+      return { ok: false, message: `看不懂这个链接。目前支持：${names}。` };
+    }
 
-    const job = new Job({
-      link,
-      deliver: (files) => this.deliver(files),
-      emit: (updated) => this.emit(updated.snapshot()),
-      onDone: (contentsId) => this.byContents.delete(contentsId),
-      session: session.fromPartition(this.partition),
-    });
-
+    const job = this.buildJob({ link });
     this.jobs.set(job.id, job);
     this.emit(job.snapshot());
 
@@ -1006,17 +1320,158 @@ class JobManager {
     return { ok: true, jobId: job.id };
   }
 
+  /**
+   * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').ShareLink }} options
+   * @returns {Job}
+   */
+  buildJob({ id, createdAt, link }) {
+    return new Job({
+      id,
+      createdAt,
+      link,
+      deliver: (files) => this.deliver(files),
+      emit: (updated) => this.emit(updated.snapshot()),
+      onDone: (contentsId) => this.byContents.delete(contentsId),
+      persist: (updated) => this.persist(updated),
+      allowTransfer: () => Boolean(this.store.getSettings().allowTransfer),
+      config: () => this.aria2Config(),
+      session: session.fromPartition(this.partition),
+    });
+  }
+
+  /** @param {Job} job */
+  persist(job) {
+    if (job.state.phase === 'failed' && job.state.code === 'cancelled') {
+      this.tasks.remove(job.id);
+      return;
+    }
+    const files = job.state.files ?? job.files;
+    if (!files || !files.length) return;
+    this.tasks.save({
+      id: job.id,
+      createdAt: job.createdAt,
+      link: job.link,
+      files,
+      gids: job.gids,
+      state:
+        job.state.phase === 'downloading' || job.state.phase === 'paused'
+          ? { phase: 'downloading', files }
+          : job.state,
+    });
+  }
+
+  /** @returns {import('../shared/protocol').Job[]} */
+  list() {
+    return Array.from(this.jobs.values())
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .map((job) => job.snapshot());
+  }
+
+  /**
+   * Reattach the jobs from the previous run to the aria2 that just started.
+   *
+   * A GID aria2 still knows resumes by itself, from the `.aria2` control file and
+   * the session file it was handed at startup. A GID it has forgotten is pushed
+   * again once; only then does the job become a failure the user resolves with a
+   * fresh link.
+   *
+   * @returns {number} how many jobs came back
+   */
+  restore() {
+    let restored = 0;
+    for (const record of this.tasks.all()) {
+      if (this.jobs.has(record.id) || !record.files?.length || !record.link) continue;
+      const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link: record.link });
+      job.files = record.files;
+      job.gids = Array.isArray(record.gids) ? record.gids : [];
+      this.jobs.set(job.id, job);
+      restored += 1;
+
+      const saved = record.state && typeof record.state === 'object' ? record.state : {};
+      if (saved.phase === 'done' || saved.phase === 'failed') {
+        job.settled = saved.phase === 'failed';
+        job.state = saved;
+        this.emit(job.snapshot());
+        continue;
+      }
+
+      if (!this.aria2Status().running) {
+        job.settled = true;
+        job.state = {
+          phase: 'failed',
+          code: 'aria2-down',
+          message: '上次的下载还在，但 aria2 没起来，没法接着下。检查下载器状态后点「继续」。',
+          files: job.files,
+        };
+        this.emit(job.snapshot());
+        continue;
+      }
+
+      job.aria2Config = this.aria2Config();
+      job.progress = job.gids.map(({ file, gid }) => ({
+        gid,
+        name: file.name,
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      }));
+      job.state = { phase: 'downloading', files: job.files, progress: job.progress.slice() };
+      this.emit(job.snapshot());
+      job.startPolling();
+    }
+    return restored;
+  }
+
   /** @param {string} jobId */
-  cancel(jobId) {
+  async cancel(jobId) {
     const job = this.jobs.get(jobId);
-    if (!job || job.settled) return;
+    if (!job) return false;
+    await job.cancel();
+    return true;
+  }
+
+  /** @param {string} jobId */
+  async pause(jobId) {
+    const job = this.jobs.get(jobId);
+    return job ? job.pause() : false;
+  }
+
+  /** @param {string} jobId */
+  async resume(jobId) {
+    const job = this.jobs.get(jobId);
+    return job ? job.resume() : false;
+  }
+
+  /**
+   * Throwing the job away and extracting the share link again is the only fix
+   * for an expired direct link, so that is what retry means.
+   *
+   * @param {string} jobId
+   * @returns {{ ok: boolean, jobId?: string, message?: string }}
+   */
+  retry(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return { ok: false, message: '这个任务已经不在列表里了。' };
+    const raw = job.link.raw;
     job.stopPolling();
-    job.fail('cancelled', '任务已取消。');
+    job.close();
+    this.tasks.remove(job.id);
+    this.jobs.delete(job.id);
+    return this.submit(raw);
   }
 
   /** @param {string} jobId */
   reveal(jobId) {
     this.jobs.get(jobId)?.reveal();
+  }
+
+  shutdown() {
+    for (const job of this.jobs.values()) job.stopPolling();
+    this.tasks.flush();
   }
 
   /**
@@ -1045,12 +1500,23 @@ class JobManager {
       return { delivery: 'browser', files };
     }
 
+    const status = this.aria2Status();
+    if (!status.running) {
+      const error = new Error(
+        status.mode === 'builtin'
+          ? `内置 aria2 没有启动成功${status.error ? `：${status.error}` : ''}。设置里点「重启内置下载器」试试。`
+          : '外部 aria2 连不上。设置里点「测试连接」看看地址和令牌。',
+      );
+      error.code = 'aria2-down';
+      throw error;
+    }
+
+    const config = this.aria2Config();
     const gids = [];
     for (const file of files) {
-      const gid = await aria2.addUri(settings.aria2, file);
-      gids.push({ file, gid });
+      gids.push({ file, gid: await aria2.addUri(config, file) });
     }
-    return { delivery: 'aria2', files, gids, config: settings.aria2 };
+    return { delivery: 'aria2', files, gids, config };
   }
 
   /**

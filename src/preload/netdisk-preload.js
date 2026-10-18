@@ -165,13 +165,14 @@ async function run() {
         .catch((error) => `threw: ${error.message}`);
       report({ kind: 'driver-frame', where, isMainFrame: process.isMainFrame });
 
+      const mode = command.mode === 'transfer' ? 'transfer' : 'share';
       let result;
       try {
-        result = await runDriver(provider, command.passcode ?? null);
+        result = await runDriver(provider, command.passcode ?? null, mode);
       } catch (error) {
         result = { ok: false, step: -1, verb: 'driver', selector: null, detail: error.message };
       }
-      report({ kind: 'driver-result', ...result });
+      report({ kind: 'driver-result', mode, ...result });
     }
   });
 }

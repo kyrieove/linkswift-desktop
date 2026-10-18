@@ -10,6 +10,7 @@
  * @typedef {{ do: 'wait-for', selector: Selector, timeoutMs: number }
  *   | { do: 'click', selector: Selector, optional?: boolean }
  *   | { do: 'click-all', selector: Selector, optional?: boolean }
+ *   | { do: 'click-text', text: string | string[], optional?: boolean, timeoutMs?: number }
  *   | { do: 'ensure-selection', selected: Selector, unselected: Selector, optional?: boolean }
  *   | { do: 'enter-folders', rowName: Selector, timeoutMs: number, maxDepth?: number }
  *   | { do: 'ensure-anchor', ancestor: string, addClass: string, create: string }
@@ -28,7 +29,32 @@
  * @property {string} pageAnchor  Where the userscript injects its own button
  * @property {string | null} passcodeParam  Query parameter that unlocks the share, if any
  * @property {Step[]} steps
+ * @property {Step[]} [transferSteps]  Run when the share refuses a large file
+ * @property {string} [driveUrl]  The account's own drive, for the post-transfer step
+ * @property {'cookie' | 'window'} [loginKind]  How this provider authenticates
+ * @property {boolean} [experimental]  A driver miss degrades to a manual window
  */
+
+/**
+ * The script's own push button inside its result dialog. A share with more than
+ * one file also renders a "全部推送" button that pushes every file; it must win,
+ * or a folder downloads only the file whose row button the driver clicked.
+ *
+ * The pushes are serialized by the script one file at a time, so the trailing
+ * sleep keeps the page alive until the last one reaches the app.
+ */
+const SEND_STEPS = [
+  {
+    do: 'wait-for',
+    selector: ['button[action="all"][type="sendto.aria2"]', 'button[action="sendto"][type="aria2"]'],
+    timeoutMs: 60000,
+  },
+  {
+    do: 'click',
+    selector: ['button[action="all"][type="sendto.aria2"]', 'button[action="sendto"][type="aria2"]'],
+  },
+  { do: 'sleep', ms: 2000 },
+];
 
 /** @type {Step[]} */
 const QUARK_STEPS = [
@@ -68,8 +94,7 @@ const QUARK_STEPS = [
   { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
   // The script then fetches the link and shows a dialog; its push button is what
   // sends aria2.addUri, which the app intercepts.
-  { do: 'wait-for', selector: 'button[action="sendto"][type="aria2"]', timeoutMs: 60000 },
-  { do: 'click', selector: 'button[action="sendto"][type="aria2"]' },
+  ...SEND_STEPS,
 ];
 
 /** @type {Step[]} */
@@ -105,10 +130,77 @@ const BAIDU_STEPS = [
   },
   { do: 'sleep', ms: 500 },
   { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
-  // The script then fetches the link and shows a dialog; its push button is what
-  // sends aria2.addUri, which the app intercepts.
-  { do: 'wait-for', selector: 'button[action="sendto"][type="aria2"]', timeoutMs: 60000 },
-  { do: 'click', selector: 'button[action="sendto"][type="aria2"]' },
+  ...SEND_STEPS,
+];
+
+/**
+ * Baidu refuses a direct link for a share file over 50MB. Saving it into the
+ * user's own drive is the only way through, and the save dialog is page UI with
+ * no stable class, so find its buttons by their words.
+ *
+ * @type {Step[]}
+ */
+const BAIDU_TRANSFER_STEPS = [
+  { do: 'click-text', text: ['保存到网盘', '保存到我的网盘'], timeoutMs: 20000 },
+  { do: 'sleep', ms: 1000 },
+  { do: 'click-text', text: ['确定', '确认'], optional: true, timeoutMs: 5000 },
+  // The upload progress is server-side; there is no event for it. The drive
+  // page below shows the file only after this window has passed.
+  { do: 'sleep', ms: 4000 },
+];
+
+/** UC shares the PC client's markup with quark, so the steps are the same shape. */
+const UC_STEPS = [
+  { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
+  {
+    do: 'fill',
+    selector: ['input[placeholder*="提取码"]', 'input[placeholder*="密码"]', '.share-password input'],
+    value: '{passcode}',
+    optional: true,
+  },
+  { do: 'sleep', ms: 800 },
+  {
+    do: 'enter-folders',
+    rowName: ['.ant-table-row .filename-text', '.ant-table-row [class*="filename-text"]'],
+    timeoutMs: 20000,
+    optional: true,
+  },
+  {
+    do: 'ensure-selection',
+    selected: ['.file-list .ant-checkbox-wrapper-checked', '.file-list .ant-table-row-selected'],
+    unselected: [
+      '.file-list .ant-table-thead .ant-checkbox-wrapper',
+      '.file-list .ant-table-row .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-checked)',
+    ],
+    optional: true,
+  },
+  { do: 'sleep', ms: 500 },
+  { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
+  ...SEND_STEPS,
+];
+
+/** 迅雷's share list is Vue, and it has no folder descent the script can follow. */
+const XUNLEI_STEPS = [
+  { do: 'wait-for', selector: '.pl-button-mode[data-mode="aria2"]', timeoutMs: 30000 },
+  {
+    do: 'fill',
+    selector: ['input[placeholder*="提取码"]', 'input[placeholder*="密码"]'],
+    value: '{passcode}',
+    optional: true,
+  },
+  { do: 'sleep', ms: 800 },
+  {
+    do: 'ensure-selection',
+    selected: ['[class*="SourceListItem__item--"][class*="selected"]', '[class*="selected--"]'],
+    unselected: [
+      '[class*="SourceListItem__checkbox"]',
+      '[class*="Share__batchActionBox--"] [type="checkbox"]:not(:checked)',
+    ],
+    optional: true,
+  },
+  { do: 'sleep', ms: 500 },
+  { do: 'click', selector: '.pl-button-mode[data-mode="aria2"]' },
+  ...SEND_STEPS,
 ];
 
 /** @type {Record<string, Provider>} */
@@ -120,6 +212,8 @@ const PROVIDERS = {
     parseShareId: (url) => url.pathname.match(/^\/(?:s|share)\/([A-Za-z0-9]+)/)?.[1] ?? null,
     pageAnchor: '.share-btns',
     passcodeParam: null,
+    loginKind: 'cookie',
+    driveUrl: 'https://pan.quark.cn/list',
     steps: QUARK_STEPS,
   },
   baidu: {
@@ -132,9 +226,41 @@ const PROVIDERS = {
     // A share page unlocks itself from ?pwd=, which is how a code gets past the
     // code screen without the driver having to click its submit button.
     passcodeParam: 'pwd',
+    loginKind: 'cookie',
+    driveUrl: 'https://pan.baidu.com/disk/main#/index?category=all',
+    transferSteps: BAIDU_TRANSFER_STEPS,
     steps: BAIDU_STEPS,
   },
+  uc: {
+    id: 'uc',
+    label: 'UC 网盘',
+    matches: (url) => /(^|\.)uc\.cn$/.test(url.hostname),
+    parseShareId: (url) => url.pathname.match(/^\/(?:s|share)\/([A-Za-z0-9]+)/)?.[1] ?? null,
+    pageAnchor: '.file-info-share-buttom',
+    passcodeParam: 'pwd',
+    loginKind: 'cookie',
+    driveUrl: 'https://drive.uc.cn/list',
+    // Selectors are transcribed from the script's own mount table; no live share
+    // page has been driven yet, so a miss falls back to the manual window.
+    experimental: true,
+    steps: UC_STEPS,
+  },
+  xunlei: {
+    id: 'xunlei',
+    label: '迅雷云盘',
+    matches: (url) => /(^|\.)xunlei\.com$/.test(url.hostname),
+    parseShareId: (url) => url.pathname.match(/^\/(?:s|share)\/([A-Za-z0-9_-]+)/)?.[1] ?? null,
+    pageAnchor: '[class^="Share__batchActionBox--"]',
+    passcodeParam: 'pwd',
+    // 迅雷 keeps its credentials in localStorage, not in a cookie, so the Chrome
+    // cookie import cannot carry a login over; the app's own window has to own it.
+    loginKind: 'window',
+    driveUrl: 'https://pan.xunlei.com/?folderId=',
+    experimental: true,
+    steps: XUNLEI_STEPS,
+  },
 };
+
 
 /**
  * What Baidu and Quark copy to the clipboard is a sentence, and a single-line

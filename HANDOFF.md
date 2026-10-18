@@ -69,17 +69,22 @@
 | 路径 | 职责 |
 |---|---|
 | `src/shared/protocol.js` | 三端共用的契约与类型 |
-| `src/shared/providers.js` | 网盘解析与声明式驱动步骤表 |
-| `src/main/main.js` | 应用入口、窗口、IPC |
-| `src/main/job.js` | 任务状态机、HTTP 代理、直链捕获 |
+| `src/shared/providers.js` | 网盘解析与声明式驱动步骤表（夸克 / 百度 / UC / 迅雷） |
+| `src/main/main.js` | 应用入口、窗口、IPC、启动内置 aria2、退出时保存会话 |
+| `src/main/job.js` | 任务状态机、HTTP 代理、直链捕获、暂停/继续/取消、重启恢复 |
+| `src/main/aria2.js` | aria2 RPC 客户端（addUri / tellStatus / pause / unpause / remove） |
+| `src/main/aria2-daemon.js` | 内置 aria2c.exe 的启动、探活、会话文件、优雅退出 |
+| `src/main/task-store.js` | `jobs.json`：任务与 GID 的持久化 |
 | `src/main/store.js` | 设置与 GM 值持久化 |
-| `src/main/userscript.js` | 上游脚本三级来源 |
-| `src/main/aria2.js` | aria2 RPC 客户端 |
+| `src/main/userscript.js` | 上游脚本三级来源 + 迅雷 getAccessToken 补丁 |
 | `src/preload/netdisk-preload.js` | 隐藏窗口的注入与通道 |
 | `src/preload/main-world.js` | `GM_*` shim |
-| `src/preload/driver.js` | 步骤表执行器 |
+| `src/preload/driver.js` | 步骤表执行器（含 click-text） |
 | `src/renderer/` | 界面 |
-| `tools/probe/` | 可复跑的验证探针 |
+| `resources/aria2/` | 内置 aria2c.exe 与 GPL 许可证 |
+| `tools/check-*.js` | 可复跑的断言（链接解析、RPC 选项、任务状态机） |
+| `tools/probe/` | 可复跑的验证探针（含 `check-aria2-lifecycle.js`、`e2e-job.js`、`e2e-failures.js`） |
+
 
 ## 早期尚未验证记录
 
@@ -90,7 +95,47 @@
 - 百度 AccessToken 的 XHR 自动授权在 2026 年的服务端是否仍然放行。
 - 剪贴板和浏览器两种推送目标。
 - 便携版打包，以及 GitHub 仓库 `kyrieove/linkswift-desktop` 尚未创建。
-## 当前接手状态（2026-10-16）
+## 2026-10-18 本轮：内置 aria2、暂停/继续/取消、重启恢复、UC 与迅雷
+
+以 DESIGN.md 第 11 节为准。
+
+### 内置 aria2（不用再单独准备）
+
+- `resources/aria2/aria2c.exe`（1.37.0）+ `COPYING` + `AUTHORS` 随仓库走，`NOTICE` 已补 GPL 声明。
+- `src/main/aria2-daemon.js` 在 `app.whenReady` 里启动，只监听 127.0.0.1，RPC 密钥随机并存在 `aria2-local.json`；6800 被占用就换端口并记住（本机常驻一个 winget 装的 aria2c 占着 6800，所以实测每次都会换端口）。
+- 启动前先探活：同端口 + 同密钥有 aria2 就直接接管，避免崩溃后重复拉起。
+- 退出走 `aria2.saveSession` + `aria2.shutdown`，会话写 `%APPDATA%\linkswift-desktop\aria2\session.txt`；参数里有 `--continue=true --save-session-interval=5 --no-conf=true`。
+- 设置里保留「外部 aria2 RPC」，`aria2Mode: builtin | external`。下载目录改成每次 `addUri` 时按设置传，改目录不用重启下载器。
+
+### 暂停 / 继续 / 取消 / 重启恢复
+
+- 协议：`INVOKE.pause / resume / retry / listJobs / aria2Status / restartAria2 / openDownloadDir`；任务状态机新增 `linked`（已拿到链接）与 `paused`（已暂停）。
+- `aria2.forcePause` 有「刚添加还不能暂停」的窗口期，`aria2.js` 里重试 4 次、每次 300ms（实测一开始就是被这个卡住的）。
+- 取消会 `aria2.forceRemove` + `removeDownloadResult`，并把这条从 `jobs.json` 删掉；取消态不再显示「继续」。
+- 恢复阶梯：`jobs.json` 里的 GID → 先问 aria2，问不到就按存的直链重推一次，再失败才判「直链已过期」并给「重新取链」。
+- 「继续」同时处理两种情况：暂停 → `unpause`；出错 → 重推 URI，aria2 按 `.aria2` 控制文件接着下。
+
+### 多文件 / 失败场景
+
+- 上游脚本是「一个文件一次 `aria2.addUri`」，原来的 `accept()` 在第一个文件就关窗口，所以文件夹只下第一个。现在驱动先点「全部推送至下载器」，应用侧把 1.5 秒内的多个 `addUri` 合并成一次投递（`tools/check-job.js` 里有断言）。
+- 百度 >50MB：`allowTransfer` 打开时由 `click-text` 步骤按「保存到网盘」「确定」的字点按钮，成功后把窗口切到 `/disk/main#/index?category=all` 并进入「需手动一步」，用户点一次下载助手即可；没打开就停在「需先转存」并说明去哪里勾。
+- 登录过期：dialog/page 文本里的「登录已过期 / 凭证已过期 / 令牌已过期」统一进「需登录」；夸克/UC 走 Chrome 导入 Cookie，迅雷走应用自己的窗口（它的凭证在 localStorage）。
+- 链接失效、网络中断：分别给 `link-invalid` / `network` 码，卡片上都有「重新取链」，aria2 侧 `--max-tries=10 --retry-wait=10 --timeout=60`。
+
+### UC 与迅雷
+
+- `src/shared/providers.js` 新增 `uc`、`xunlei` 两条步骤表，标 `experimental`：驱动点不到时进「需手动一步」而不是判「上游改版」，窗口留着，用户点完照样接住 `addUri`。
+- `src/main/userscript.js` 的 `patchSource` 给上游补 `config.$xunlei.api.getAccessToken = https://xluser-ssl.xunlei.com/v1/auth/token`（上游引用了却没定义，过期即死）；`tools/check-share-link.js` 有断言。
+
+### 本轮实测（都可复跑）
+
+- `npm run check:lifecycle` 通过：本地慢速 HTTP 服务 → 暂停 → 继续 → 退出 → 重启（同 GID、从 8.06 MiB 接着下）→ 下完，字节一致、无 `.aria2`；第二条更贴近真实用法：下载中直接退出 → 重启 → 自动接着下 → 下完。
+- 真机（百度 23,909,266 字节那个分享）走完整链路：解析中 → 已拿到链接 → 下载中 → 暂停（3 秒后仍是已暂停）→ 继续 → 退出应用 → 重开自动找回同一 GID 并从 6.5 MiB 接着下 → 下载完成，落盘 23,909,266 字节、无 `.aria2` 残留。
+- 失效链接 → 「下载失败 / network」且带「重新取链」；下载中点「取消」→「已取消」，`jobs.json` 里这条被删掉。
+- 夸克真链（`https://pan.quark.cn/s/ae8f001eadf6`）只验证到「已拿到链接」就取消，没有重复下载。
+
+
+## 历史记录（2026-10-16 至 10-17，已被上面一节覆盖）
 
 ### 2026-10-16 晚更新（以本节为准，下面「最近已验证」中夸克相关条目已过时）
 
@@ -187,7 +232,9 @@
 
 ### 未完成事项（后续版本规划）
 
-1. **便携版与安装包打包**：引入 `electron-builder` 打包免安装便携版 exe 与 NSIS 安装包。
-2. **自动化测试与 CI**：将 `check:aria2`、RPC 选项断言与 driver 模拟测试集成进 GitHub Actions。
-3. **其余网盘支持**：修复上游用户脚本中阿里、迅雷、移动等网盘分享分支的未定义符号与断言缺陷。
+1. **便携版与安装包打包**：引入 `electron-builder` 打包免安装便携版 exe 与 NSIS 安装包；打包时把 `resources/aria2/` 一起带上，`main.js` 已按 `process.resourcesPath` 找二进制。
+2. **自动化测试与 CI**：把 `check:aria2`、`check:share-link`、`check:job`、`check:lifecycle` 接进 GitHub Actions。
+3. **UC / 迅雷真机验证**：两家步骤表取自脚本挂载点，还没在真实分享页上跑通；跑通后去掉 `experimental` 标记并把选择器写实。
+4. **其余网盘**：阿里、移动、天翼等仍受上游脚本缺陷影响。
+
 

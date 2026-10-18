@@ -16,7 +16,9 @@
     "probe:throttle": "electron tools/probe/probe-throttle-control.js",
     "probe:proxy": "electron tools/probe/check-proxy.js",
     "check:aria2": "node tools/check-aria2-options.js",
-    "check:share-link": "node tools/check-share-link.js"
+    "check:share-link": "node tools/check-share-link.js",
+    "check:job": "node tools/check-job.js",
+    "check:lifecycle": "node tools/probe/check-aria2-lifecycle.js"
   },
   "dependencies": {
     "@sweetalert2/theme-dark": "5.0.26",

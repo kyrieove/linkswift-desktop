@@ -377,3 +377,14 @@ Electron 44.8.0 实测。探针脚本在 `tools/probe/`，开发时随仓库走�
 | 主世界可达 | `unsafeWindow === window` 为真 |
 | 凭证可读 | `localStorage` 可读，`document.cookie` 可读，`session.cookies.get()` 可导出 |
 | 定时器节流 | 窗口显示后再隐藏，100ms 定时器 6 秒只跑 6 次；`backgroundThrottling: false` 下跑满 60 次 |
+
+## 11. 增补（2026-10-18）：下载器内置化与任务恢复
+
+第 5 节把 aria2 当成「用户已经跑着的 RPC 服务」，需要用户自己装、自己填地址和密钥。实测下来这是首次使用最难的一步，因此改成：
+
+1. **内置 aria2 随应用启动**。`resources/aria2/aria2c.exe`（1.37.0，GPL-2.0-or-later，见 `NOTICE`）由主进程 `src/main/aria2-daemon.js` 拉起，只监听回环地址，RPC 密钥随机生成并存在 `%APPDATA%\linkswift-desktop\aria2-local.json`。端口默认 6800，被占用就另选一个并记住。设置里保留「外部 aria2 RPC」选项，第 5 节的推送目标没有变。
+2. **会话与进度落在 aria2 自己手上**。`--continue=true`、`--save-session`、`--save-session-interval=5`，加上每个文件的 `.aria2` 控制文件：退出时用 `aria2.shutdown` 让 aria2 自己写会话，重开后按 GID 找回，没暂停过的任务自动接着下。
+3. **应用侧再存一份**。`jobs.json` 记 id、分享链接、直链、GID 与状态；重启后先按 GID 问 aria2，问不到就把直链重推一次，仍失败才判「直链已过期」并给「重新取链」。
+4. **暂停 / 继续 / 取消**。`aria2.forcePause` / `aria2.unpause` / `aria2.forceRemove`；任务状态机新增 `linked`（已拿到链接）与 `paused`（已暂停），与「下载中」「下载失败」「下载完成」并列。
+5. **文件夹多文件**。上游脚本按文件逐个发 `aria2.addUri`，因此驱动先点它的「全部推送至下载器」，应用侧再把短时间内的多个 `addUri` 合并成一次投递，否则一个文件夹只会下到第一个文件。
+6. **UC 网盘与迅雷云盘**。`src/shared/providers.js` 增加两条声明式步骤表。两家的选择器来自脚本自身的挂载点表、未在真实分享页上验证，所以标了 `experimental`：驱动点不到时不停在「上游改版」，而是留着窗口让用户点一次「下载助手」，`addUri` 照样被应用接住。迅雷的凭证在 localStorage 而不是 Cookie，登录因此走应用自己的窗口；上游缺失的 `getAccessToken` 在注入前补一行补丁。

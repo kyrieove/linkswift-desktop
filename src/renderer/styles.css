@@ -501,6 +501,13 @@ input {
   gap: var(--sp-2);
 }
 
+/* A flex or grid display beats the [hidden] attribute's own display:none. */
+.settings__actions[hidden],
+.settings__group[hidden],
+fieldset[hidden] {
+  display: none;
+}
+
 .settings__actions .note {
   margin-top: 0;
 }
@@ -835,6 +842,13 @@ input {
   --chip-tone: var(--tone-ok);
   color: var(--tone-ok);
   background: var(--ok-soft);
+  border-color: transparent;
+}
+
+.chip[data-tone="info"] {
+  --chip-tone: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
   border-color: transparent;
 }
 

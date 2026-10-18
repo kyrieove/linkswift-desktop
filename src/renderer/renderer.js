@@ -12,7 +12,12 @@
 
   const api = window.linkswift;
 
-  const PROVIDER_LABELS = { quark: '夸克网盘', baidu: '百度网盘' };
+  const PROVIDER_LABELS = {
+    quark: '夸克网盘',
+    baidu: '百度网盘',
+    uc: 'UC 网盘',
+    xunlei: '迅雷云盘',
+  };
 
   const DELIVERY_LABELS = { aria2: 'aria2', clipboard: '剪贴板', browser: '浏览器' };
   const DELIVERY_HINTS = {
@@ -21,14 +26,23 @@
     browser: '取到直链后交给系统默认浏览器下载。',
   };
 
+  const MODE_HINTS = {
+    builtin: '软件自带 aria2，打开就启动，下载目录可改。退出时会记住进度，下次打开接着下。',
+    external: '用你自己跑着的 aria2 / Motrix / AriaNg，填它的 RPC 地址与令牌。',
+  };
+
+  // The four states the user asked to be able to tell apart at a glance: a link
+  // in hand, a download running, a download that failed, a download that is done.
   const PHASE_CHIPS = {
-    loading: { label: '加载中', tone: 'busy' },
+    loading: { label: '解析中', tone: 'busy' },
     'needs-human': { label: '需要你处理', tone: 'warn' },
-    extracting: { label: '提取中', tone: 'busy' },
-    delivering: { label: '推送中', tone: 'busy' },
+    extracting: { label: '解析中', tone: 'busy' },
+    linked: { label: '已拿到链接', tone: 'info' },
+    delivering: { label: '推送到下载器', tone: 'busy' },
     downloading: { label: '下载中', tone: 'busy' },
-    done: { label: '已完成', tone: 'ok' },
-    failed: { label: '失败', tone: 'bad' },
+    paused: { label: '已暂停', tone: 'warn' },
+    done: { label: '下载完成', tone: 'ok' },
+    failed: { label: '下载失败', tone: 'bad' },
   };
 
   const PHASE_TEXTS = {
@@ -39,7 +53,7 @@
   const HUMAN_REASONS = {
     login: {
       chip: '需登录',
-      text: '这个网盘需要登录后才能取直链。已打开本机 Chrome 浏览器，请在 Chrome 中登录网盘，登录完成后任务会自动继续。',
+      text: '这个网盘需要登录后才能取直链。已打开本机 Chrome 浏览器，请在 Chrome 中登录网盘，登录完成后任务会自动继续。登录过期也走这里。',
     },
     passcode: {
       chip: '需提取码',
@@ -53,29 +67,39 @@
       chip: '页面异常',
       text: '页面结构与预期不符，可能是网盘或上游脚本改版。点「打开窗口」看页面实际内容。',
     },
+    transfer: {
+      chip: '需先转存',
+      text: '这个文件超过 50MB，百度不允许直接从分享页取直链。勾选设置里的「允许自动转存到我的百度网盘」后重新提交，程序会替你点保存。',
+    },
+    manual: {
+      chip: '需手动一步',
+      text: '自动点击没能完成最后一步。窗口已经打开，请在页面里点「下载助手」→「Aria2 下载」→「推送地址到 Aria2 下载器」，程序会接住后面的下载。',
+    },
   };
 
   const FAILURE_LABELS = {
     'upstream-redesigned': '上游改版',
     'unsupported-provider': '不支持的网盘',
-    network: '网络错误',
-    delivery: '推送失败',
+    network: '网络中断',
+    delivery: '下载失败',
     timeout: '超时',
     cancelled: '已取消',
     'no-files': '没取到文件',
     'chrome-not-found': '未找到 Chrome',
     'link-invalid': '分享已失效',
+    'link-expired': '直链已过期',
     'file-missing': '文件不存在',
     'passcode-wrong': '提取码不对',
     'needs-transfer': '需要先转存',
     'rate-limited': '账号被限流',
     'extract-failed': '取链没弹出',
+    'aria2-down': '下载器没启动',
   };
 
   // Only the host knows the full link grammar; this is just enough to decide
   // whether the clipboard is worth offering as a one-click paste.
   const SHARE_LINK_RE =
-    /https?:\/\/[^\s"'<>()（）【】,，;；]*?(?:quark\.cn\/(?:s|share)\/|baidu\.com\/(?:s\/|share\/))[^\s"'<>()（）【】,，;；]*/i;
+    /https?:\/\/[^\s"'<>()（）【】,，;；]*?(?:quark\.cn\/(?:s|share)\/|baidu\.com\/(?:s\/|share\/)|uc\.cn\/(?:s|share)\/|xunlei\.com\/(?:s|share)\/)[^\s"'<>()（）【】,，;；]*/i;
 
   const dom = {
     form: document.getElementById('submit-form'),
@@ -98,6 +122,12 @@
     saveSettings: document.getElementById('save-settings'),
     testAria2: document.getElementById('test-aria2'),
     browseAria2Dir: document.getElementById('browse-aria2-dir'),
+    rpcFields: document.getElementById('rpc-fields'),
+    modeHint: document.getElementById('mode-hint'),
+    aria2Status: document.getElementById('aria2-status'),
+    builtinActions: document.getElementById('builtin-actions'),
+    restartAria2: document.getElementById('restart-aria2'),
+    openDownloadDir: document.getElementById('open-download-dir'),
     aria2TestResult: document.getElementById('aria2-test-result'),
     settingsStatus: document.getElementById('settings-status'),
     settingsError: document.getElementById('settings-error'),
@@ -109,6 +139,9 @@
 
   const deliveryRadios = Array.prototype.slice.call(
     document.querySelectorAll('input[name="delivery"]')
+  );
+  const modeRadios = Array.prototype.slice.call(
+    document.querySelectorAll('input[name="aria2-mode"]')
   );
 
   // The job list is the only state kept here, exactly as the contract intends:
@@ -278,7 +311,8 @@
       phase === 'needs-human' ||
       phase === 'extracting' ||
       phase === 'delivering' ||
-      phase === 'downloading'
+      phase === 'downloading' ||
+      phase === 'paused'
     );
   }
 
@@ -416,6 +450,65 @@
     return row ? row.querySelector('.job__note') : dom.composerError;
   }
 
+  /**
+   * Pause, resume, retry and cancel differ only in the message they send, so one
+   * factory covers all four. A successful call lands as a new job state from the
+   * host; a refused one says why next to the button it came from.
+   */
+  function jobActionButton(job, { label, busyLabel, key, method, primary }) {
+    const btn = el('button', 'btn btn--sm ' + (primary ? 'btn--primary' : 'btn--quiet'), label);
+    btn.type = 'button';
+    btn.dataset.focusKey = key + ':' + job.id;
+    btn.addEventListener('click', async () => {
+      btn.setAttribute('aria-busy', 'true');
+      btn.textContent = busyLabel;
+      try {
+        const result = await api[method](job.id);
+        if (result === false) {
+          setNote(rowNote(btn), `${label}没生效：任务状态已经变了，看上面的状态。`, 'error');
+        } else if (result && result.ok === false) {
+          setNote(rowNote(btn), result.message || `${label}没生效。`, 'error');
+        }
+      } catch (err) {
+        setNote(rowNote(btn), `${label}失败：` + describeError(err), 'error');
+      } finally {
+        if (btn.isConnected) {
+          btn.removeAttribute('aria-busy');
+          btn.textContent = label;
+        }
+      }
+    });
+    return btn;
+  }
+
+  function pauseButton(job) {
+    return jobActionButton(job, {
+      label: '暂停',
+      busyLabel: '暂停中…',
+      key: 'pause',
+      method: 'pause',
+    });
+  }
+
+  function resumeButton(job) {
+    return jobActionButton(job, {
+      label: '继续',
+      busyLabel: '继续中…',
+      key: 'resume',
+      method: 'resume',
+      primary: true,
+    });
+  }
+
+  function retryButton(job) {
+    return jobActionButton(job, {
+      label: '重新取链',
+      busyLabel: '重新解析中…',
+      key: 'retry',
+      method: 'retry',
+    });
+  }
+
   function diagnosisText(job) {
     const state = job.state || {};
     const link = job.link || {};
@@ -460,26 +553,55 @@
     );
   }
 
+  function filesBlock(files, jobId, summary, open) {
+    if (!Array.isArray(files) || !files.length) return null;
+    const details = el('details', 'detail job__files');
+    details.dataset.openKey = 'files:' + jobId;
+    details.open = Boolean(open);
+    details.append(el('summary', 'detail__summary', summary));
+    const list = el('ul', 'files');
+    files.forEach((file, index) => list.append(fileRow(file, jobId, index)));
+    details.append(list);
+    return details;
+  }
+
   function jobBody(job) {
     const state = job.state || {};
     const body = el('div', 'job__body');
+    const delivery = DELIVERY_LABELS[currentDelivery()] || currentDelivery();
 
     if (state.phase === 'loading') {
       body.append(el('p', 'job__text', PHASE_TEXTS.loading));
     } else if (state.phase === 'extracting') {
       body.append(el('p', 'job__text', PHASE_TEXTS.extracting));
+    } else if (state.phase === 'linked') {
+      const files = Array.isArray(state.files) ? state.files : [];
+      body.append(el('p', 'job__text', `直链已经拿到，正在推给${delivery}…`));
+      const block = filesBlock(files, job.id, `直链 ${files.length} 个`, true);
+      if (block) body.append(block);
     } else if (state.phase === 'delivering') {
-      const target = currentDelivery();
-      body.append(
-        el('p', 'job__text', '正在推送到' + (DELIVERY_LABELS[target] || target) + '…')
-      );
-    } else if (state.phase === 'downloading') {
+      const files = Array.isArray(state.files) ? state.files : [];
+      body.append(el('p', 'job__text', '直链已经拿到，正在推送到' + delivery + '…'));
+      const block = filesBlock(files, job.id, `直链 ${files.length} 个`, false);
+      if (block) body.append(block);
+    } else if (state.phase === 'downloading' || state.phase === 'paused') {
       const list = Array.isArray(state.progress) ? state.progress : [];
       if (!list.length) {
         body.append(el('p', 'job__text', '正在下载…'));
       } else {
         list.forEach((p) => body.append(downloadCard(p)));
       }
+      if (state.phase === 'paused') {
+        body.append(
+          el(
+            'p',
+            'job__text',
+            '已暂停。点「继续」接着下；直接退出软件也不会丢，下次打开会自动接着下。',
+          ),
+        );
+      }
+      const block = filesBlock(state.files, job.id, '直链 ' + (state.files || []).length + ' 个', false);
+      if (block) body.append(block);
       const hint = accountSpeedHint(job);
       if (hint) body.append(hint);
     } else if (state.phase === 'needs-human') {
@@ -488,8 +610,8 @@
         el(
           'p',
           'job__message',
-          reason ? reason.text : '需要你介入处理这个任务，原因：' + String(state.reason)
-        )
+          state.message || (reason ? reason.text : '需要你介入处理这个任务，原因：' + String(state.reason)),
+        ),
       );
       if (state.reason !== 'login') {
         const reveal = el('button', 'btn btn--sm btn--primary', '打开窗口');
@@ -500,7 +622,7 @@
           try {
             await api.revealWindow(job.id);
           } catch (err) {
-            setNote(rowNote(reveal), '打开窗口失败：' + describeError(err));
+            setNote(rowNote(reveal), '打开窗口失败：' + describeError(err), 'error');
           } finally {
             if (reveal.isConnected) {
               reveal.removeAttribute('aria-busy');
@@ -519,14 +641,13 @@
       if (!files.length && (!state.progress || !state.progress.length)) {
         body.append(el('p', 'job__text', '任务完成，但没有返回文件。'));
       } else if (files.length) {
-        const list = el('ul', 'files');
-        files.forEach((file, index) => list.append(fileRow(file, job.id, index)));
-        body.append(list);
+        const block = filesBlock(files, job.id, `下载完成 · 直链 ${files.length} 个`, true);
+        if (block) body.append(block);
       }
       const doneHint = accountSpeedHint(job);
       if (doneHint) body.append(doneHint);
     } else if (state.phase === 'failed') {
-      if (Array.isArray(state.progress) && state.progress.length) {
+      if (state.code !== 'cancelled' && Array.isArray(state.progress) && state.progress.length) {
         state.progress.forEach((p) => body.append(downloadCard(p)));
       }
       body.append(el('p', 'job__message', state.message || '任务失败。'));
@@ -542,6 +663,8 @@
         details.append(el('pre', 'detail__pre', String(state.detail)));
         body.append(details);
       }
+      const block = filesBlock(state.files, job.id, '已拿到的直链 ' + ((state.files || []).length) + ' 个', false);
+      if (block) body.append(block);
       const actions = el('div', 'job__actions');
       actions.append(diagnosisButton(job));
       body.append(actions);
@@ -581,7 +704,20 @@
     head.append(phaseChip(job));
 
     const actions = el('div', 'job__actions');
-    if (cancellable(job.state && job.state.phase)) actions.append(cancelButton(job));
+    const phase = job.state && job.state.phase;
+    const state = job.state || {};
+    if (phase === 'downloading') actions.append(pauseButton(job));
+    if (
+      phase === 'paused' ||
+      (phase === 'failed' &&
+        state.code !== 'cancelled' &&
+        Array.isArray(state.files) &&
+        state.files.length)
+    ) {
+      actions.append(resumeButton(job));
+    }
+    if (phase === 'failed' && state.code !== 'cancelled') actions.append(retryButton(job));
+    if (cancellable(phase)) actions.append(cancelButton(job));
     if (actions.childNodes.length) head.append(actions);
 
     row.append(head, jobBody(job), el('p', 'note note--error job__note', ''));
@@ -746,10 +882,52 @@
     return checked ? checked.value : 'aria2';
   }
 
+  function currentMode() {
+    const checked = modeRadios.find((radio) => radio.checked);
+    return checked ? checked.value : 'builtin';
+  }
+
   function reflectDelivery() {
     const target = currentDelivery();
     dom.deliveryHint.textContent = DELIVERY_HINTS[target] || '';
-    dom.settingsSummary.textContent = '推送目标：' + (DELIVERY_LABELS[target] || target);
+    dom.settingsSummary.textContent =
+      '推送目标：' + (DELIVERY_LABELS[target] || target) +
+      ' · ' + (currentMode() === 'builtin' ? '内置 aria2' : '外部 aria2');
+  }
+
+  function reflectMode() {
+    const mode = currentMode();
+    dom.modeHint.textContent = MODE_HINTS[mode] || '';
+    // The address fields only mean something for an aria2 the app did not start.
+    dom.rpcFields.hidden = mode === 'builtin';
+    dom.builtinActions.hidden = mode !== 'builtin';
+    reflectDelivery();
+    if (mode === 'builtin') refreshAria2Status();
+    else setNote(dom.aria2Status, '外部 aria2：用下面的地址测试连接。', 'ok');
+  }
+
+  async function refreshAria2Status() {
+    let status = null;
+    try {
+      status = await api.aria2Status();
+    } catch (err) {
+      setNote(dom.aria2Status, '读不到下载器状态：' + describeError(err), 'error');
+      return;
+    }
+    if (!status) return;
+    if (status.mode !== 'builtin') {
+      setNote(dom.aria2Status, '外部 aria2：用下面的地址测试连接。', 'ok');
+      return;
+    }
+    if (status.running) {
+      setNote(
+        dom.aria2Status,
+        `内置 aria2 ${status.version || ''} 运行中 · 127.0.0.1:${status.port}${status.adopted ? '（接管了上次的进程）' : ''}`,
+        'ok',
+      );
+    } else {
+      setNote(dom.aria2Status, '内置 aria2 没在运行：' + (status.error || '未知原因'), 'error');
+    }
   }
 
   function setInputValue(input, value) {
@@ -761,7 +939,9 @@
 
     const delivery = DELIVERY_LABELS[settings.delivery] ? settings.delivery : 'aria2';
     for (const radio of deliveryRadios) radio.checked = radio.value === delivery;
-    reflectDelivery();
+
+    const mode = settings.aria2Mode === 'external' ? 'external' : 'builtin';
+    for (const radio of modeRadios) radio.checked = radio.value === mode;
 
     const aria2 = settings.aria2 && typeof settings.aria2 === 'object' ? settings.aria2 : {};
     setInputValue(dom.aria2Domain, aria2.domain);
@@ -772,6 +952,7 @@
     dom.allowTransfer.checked = Boolean(settings.allowTransfer);
     autoSubmit = Boolean(settings.autoSubmit);
     if (dom.autoSubmit) dom.autoSubmit.checked = autoSubmit;
+    reflectMode();
   }
 
   async function loadSettings() {
@@ -786,6 +967,7 @@
   function readSettingsForm() {
     return {
       delivery: currentDelivery(),
+      aria2Mode: currentMode(),
       aria2: {
         domain: dom.aria2Domain.value.trim(),
         port: dom.aria2Port.value.trim(),
@@ -804,8 +986,8 @@
     setNote(dom.settingsStatus, '');
 
     const next = readSettingsForm();
-    if (next.delivery === 'aria2' && !next.aria2.domain) {
-      setNote(dom.settingsError, '推送目标为 aria2 时，地址不能为空。');
+    if (next.delivery === 'aria2' && next.aria2Mode === 'external' && !next.aria2.domain) {
+      setNote(dom.settingsError, '用外部 aria2 时，地址不能为空。');
       dom.settings.open = true;
       dom.aria2Domain.focus();
       return;
@@ -822,7 +1004,7 @@
         setNote(dom.settingsStatus, '');
       }, 2400);
     } catch (err) {
-      setNote(dom.settingsError, '保存失败：' + describeError(err));
+      setNote(dom.settingsError, '保存失败：' + describeError(err), 'error');
     } finally {
       saving = false;
       dom.saveSettings.removeAttribute('aria-busy');
@@ -870,6 +1052,33 @@
     radio.addEventListener('change', reflectDelivery);
   }
 
+  for (const radio of modeRadios) {
+    radio.addEventListener('change', reflectMode);
+  }
+
+  dom.restartAria2.addEventListener('click', async () => {
+    dom.restartAria2.setAttribute('aria-busy', 'true');
+    dom.restartAria2.textContent = '重启中…';
+    try {
+      await api.restartAria2();
+      await refreshAria2Status();
+    } catch (err) {
+      setNote(dom.aria2Status, '重启失败：' + describeError(err), 'error');
+    } finally {
+      dom.restartAria2.removeAttribute('aria-busy');
+      dom.restartAria2.textContent = '重启内置下载器';
+    }
+  });
+
+  dom.openDownloadDir.addEventListener('click', async () => {
+    try {
+      const failure = await api.openDownloadDir();
+      if (failure) setNote(dom.aria2Status, '打不开下载目录：' + failure, 'error');
+    } catch (err) {
+      setNote(dom.aria2Status, '打不开下载目录：' + describeError(err), 'error');
+    }
+  });
+
   dom.showToken.addEventListener('change', () => {
     dom.aria2Token.type = dom.showToken.checked ? 'text' : 'password';
   });
@@ -899,9 +1108,28 @@
   api.onJobEvent(handleJobEvent);
   window.__linkswift_dispatch_job__ = handleJobEvent;
 
+  // Jobs the previous run left behind arrive as a list, not as events: the
+  // window may well have opened after the host had already reattached them.
+  async function loadExistingJobs() {
+    let existing = [];
+    try {
+      existing = await api.listJobs();
+    } catch (err) {
+      return;
+    }
+    if (!Array.isArray(existing)) return;
+    for (const job of existing) {
+      if (!job || !job.id || jobs.has(job.id)) continue;
+      jobs.set(job.id, job);
+      jobOrder.push(job.id);
+    }
+    renderJobs();
+  }
+
   renderJobs();
   reflectDelivery();
   loadSettings();
+  loadExistingJobs();
   dom.input.focus();
   probeClipboard();
 
@@ -918,6 +1146,7 @@
 
     let demoSettings = {
       delivery: 'aria2',
+      aria2Mode: 'builtin',
       aria2: { domain: 'http://localhost', port: '6800', path: '/jsonrpc', token: '', dir: '' },
       allowTransfer: false,
     };
@@ -1000,7 +1229,52 @@
           job.state = { phase: 'failed', code: 'cancelled', message: '任务已取消。' };
           emit(job);
         }
-        return Promise.resolve();
+        return Promise.resolve(true);
+      },
+      pause(jobId) {
+        const job = demoJobs.get(jobId);
+        if (!job) return Promise.resolve(false);
+        job.state = {
+          phase: 'paused',
+          files: job.state.files || demoFiles,
+          progress: job.state.progress || [],
+        };
+        emit(job);
+        return Promise.resolve(true);
+      },
+      resume(jobId) {
+        const job = demoJobs.get(jobId);
+        if (!job) return Promise.resolve(false);
+        job.state = {
+          phase: 'downloading',
+          files: job.state.files || demoFiles,
+          progress: job.state.progress || [],
+        };
+        emit(job);
+        step(jobId, 2000, { phase: 'done', files: demoFiles });
+        return Promise.resolve(true);
+      },
+      retry() {
+        return Promise.resolve({ ok: true, jobId: 'demo-job-retry' });
+      },
+      listJobs() {
+        return Promise.resolve(Array.from(demoJobs.values()));
+      },
+      aria2Status() {
+        return Promise.resolve({
+          mode: 'builtin',
+          running: true,
+          port: 6800,
+          version: '1.37.0（预览数据）',
+          error: null,
+          adopted: false,
+        });
+      },
+      restartAria2() {
+        return Promise.resolve({ mode: 'builtin', running: true, port: 6800, version: '1.37.0（预览数据）' });
+      },
+      openDownloadDir() {
+        return Promise.resolve(null);
       },
       getSettings() {
         return Promise.resolve(JSON.parse(JSON.stringify(demoSettings)));

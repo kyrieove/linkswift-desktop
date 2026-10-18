@@ -276,6 +276,12 @@ const PROVIDER_CONFIGS = {
     domainMatch: (d) => typeof d === 'string' && d.includes('quark.cn'),
     providerName: '夸克',
   },
+  uc: {
+    loginUrl: 'https://drive.uc.cn/',
+    keyCookie: '__puus',
+    domainMatch: (d) => typeof d === 'string' && d.includes('uc.cn'),
+    providerName: 'UC',
+  },
 };
 
 /** @type {Map<string, Promise<{ ok: boolean, count: number }>>} */

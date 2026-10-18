@@ -34,7 +34,7 @@
         <p id="composer-error" class="note note--error" role="alert" hidden></p>
         <p id="composer-status" class="note" role="status" hidden></p>
         <p id="composer-hint" class="composer__hint">
-          支持夸克网盘与百度网盘的分享链接，回车即可提交。整段分享文案直接粘贴即可，链接和提取码会自动识别。
+          支持夸克、百度、UC、迅雷云盘的分享链接，回车即可提交。整段分享文案直接粘贴即可，链接和提取码会自动识别。
         </p>
       </form>
     </section>
@@ -77,7 +77,51 @@
             <p class="field__hint" id="delivery-hint"></p>
           </div>
 
-          <fieldset class="settings__group">
+          <div class="settings__group" role="radiogroup" aria-labelledby="downloader-label">
+            <p class="settings__legend" id="downloader-label">下载器</p>
+            <div class="segmented">
+              <input
+                class="segmented__input"
+                type="radio"
+                name="aria2-mode"
+                id="mode-builtin"
+                value="builtin"
+              />
+              <label class="segmented__label" for="mode-builtin">内置 aria2</label>
+              <input
+                class="segmented__input"
+                type="radio"
+                name="aria2-mode"
+                id="mode-external"
+                value="external"
+              />
+              <label class="segmented__label" for="mode-external">外部 aria2 RPC</label>
+            </div>
+            <p class="field__hint" id="mode-hint"></p>
+            <p class="note" id="aria2-status" role="status" hidden></p>
+            <div class="settings__actions" id="builtin-actions">
+              <button id="restart-aria2" class="btn" type="button">重启内置下载器</button>
+              <button id="open-download-dir" class="btn" type="button">打开下载目录</button>
+            </div>
+          </div>
+
+          <div class="settings__group">
+            <label class="field__label" for="aria2-dir">下载目录</label>
+            <div class="directory-picker">
+              <input
+                class="input input--mono"
+                id="aria2-dir"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="留空使用「下载\LinkSwift」"
+              />
+              <button id="browse-aria2-dir" class="btn" type="button">浏览…</button>
+            </div>
+            <p class="field__hint">内置下载器直接写这个目录；外部 aria2 用它覆盖自己的 dir</p>
+          </div>
+
+          <fieldset class="settings__group" id="rpc-fields">
             <legend class="settings__legend">aria2 RPC</legend>
             <div class="settings__grid">
               <div class="field">
@@ -130,21 +174,6 @@
                   <input type="checkbox" id="show-token" />
                   <span>显示令牌</span>
                 </label>
-              </div>
-              <div class="field field--directory">
-                <label class="field__label" for="aria2-dir">下载目录</label>
-                <div class="directory-picker">
-                  <input
-                    class="input input--mono"
-                    id="aria2-dir"
-                    type="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder="留空使用 aria2 默认目录"
-                  />
-                  <button id="browse-aria2-dir" class="btn" type="button">浏览…</button>
-                </div>
-                <p class="field__hint">留空即交给 aria2 自己决定</p>
               </div>
             </div>
             <div class="settings__actions">

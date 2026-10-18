@@ -10,10 +10,10 @@
  *   Observation  something the page reported. The page never commands.
  *   Command      something the host told the page to do.
  *
- * @typedef {'quark' | 'baidu'} ProviderId
+ * @typedef {'quark' | 'baidu' | 'uc' | 'xunlei'} ProviderId
  * @typedef {'aria2' | 'clipboard' | 'browser'} DeliveryTarget
- * @typedef {'login' | 'passcode' | 'captcha' | 'unknown-page'} HumanReason
- * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found' | 'link-invalid' | 'file-missing' | 'passcode-wrong' | 'needs-transfer' | 'rate-limited' | 'extract-failed'} FailureCode
+ * @typedef {'login' | 'passcode' | 'captcha' | 'unknown-page' | 'manual' | 'transfer'} HumanReason
+ * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found' | 'link-invalid' | 'file-missing' | 'passcode-wrong' | 'needs-transfer' | 'rate-limited' | 'extract-failed' | 'link-expired' | 'aria2-down'} FailureCode
  */
 
 /**
@@ -29,6 +29,7 @@
  * @typedef {object} Settings
  * @property {DeliveryTarget} delivery
  * @property {Aria2Config} aria2
+ * @property {'builtin' | 'external'} aria2Mode  builtin runs the bundled aria2
  * @property {boolean} allowTransfer  Lets the baidu flow write into the user's drive
  * @property {boolean} autoSubmit     提交前不再等一次点击：粘贴到分享文案就开跑
  */
@@ -63,15 +64,21 @@
 
 /**
  * The job state machine. Illegal states are not representable: a job carries
- * files only in `done`, and a reason only in `needs-human`.
+ * files only once they exist, and a reason only in `needs-human`.
+ *
+ * `linked` is the moment the direct links are in hand and delivery has not
+ * finished yet. It exists so the UI can tell "拿到链接" apart from "下载完成":
+ * clipboard and browser delivery never reach `downloading`.
  *
  * @typedef {{ phase: 'loading' }
  *   | { phase: 'needs-human', reason: HumanReason }
  *   | { phase: 'extracting' }
- *   | { phase: 'delivering' }
+ *   | { phase: 'linked', files: ExtractedFile[] }
+ *   | { phase: 'delivering', files: ExtractedFile[] }
  *   | { phase: 'downloading', files: ExtractedFile[], progress: DownloadProgress[] }
+ *   | { phase: 'paused', files: ExtractedFile[], progress: DownloadProgress[] }
  *   | { phase: 'done', files: ExtractedFile[], progress?: DownloadProgress[] }
- *   | { phase: 'failed', code: FailureCode, message: string, detail?: string, progress?: DownloadProgress[] }} JobPhase
+ *   | { phase: 'failed', code: FailureCode, message: string, detail?: string, files?: ExtractedFile[], progress?: DownloadProgress[] }} JobPhase
  */
 
 /**
@@ -79,6 +86,8 @@
  * @property {string} id
  * @property {ShareLink} link
  * @property {JobPhase} state
+ * @property {number} createdAt
+ * @property {boolean} [restored]  Rebuilt from disk after a restart
  */
 
 /**
@@ -87,10 +96,17 @@
 const INVOKE = {
   submit: 'linkswift:submit',
   cancel: 'linkswift:cancel',
+  pause: 'linkswift:pause',
+  resume: 'linkswift:resume',
+  retry: 'linkswift:retry',
+  listJobs: 'linkswift:jobs:list',
   getSettings: 'linkswift:settings:get',
   setSettings: 'linkswift:settings:set',
   revealWindow: 'linkswift:window:reveal',
   testAria2: 'linkswift:aria2:test',
+  aria2Status: 'linkswift:aria2:status',
+  restartAria2: 'linkswift:aria2:restart',
+  openDownloadDir: 'linkswift:downloads:open',
   chooseDirectory: 'linkswift:directory:choose',
 };
 

@@ -31,9 +31,10 @@ function withToken(config, params) {
  * @param {Aria2Config} config
  * @param {string} method
  * @param {unknown[]} params
+ * @param {number} [timeoutMs]
  * @returns {Promise<unknown>}
  */
-async function call(config, method, params) {
+async function call(config, method, params, timeoutMs = 15000) {
   const body = {
     id: createHash('md5').update(`${method}${Date.now()}`).digest('hex'),
     jsonrpc: '2.0',
@@ -47,7 +48,7 @@ async function call(config, method, params) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     throw new Error(`连接 aria2 失败（${endpoint(config)}）：${error.message}`);
@@ -67,9 +68,9 @@ async function call(config, method, params) {
   return parsed.result;
 }
 
-/** @param {Aria2Config} config */
-async function getVersion(config) {
-  const result = await call(config, 'aria2.getVersion', []);
+/** @param {Aria2Config} config @param {number} [timeoutMs] */
+async function getVersion(config, timeoutMs) {
+  const result = await call(config, 'aria2.getVersion', [], timeoutMs);
   return /** @type {{ version: string }} */ (result);
 }
 
@@ -159,4 +160,83 @@ async function tellStatus(config, gid) {
   return /** @type {any} */ (result);
 }
 
-module.exports = { getVersion, addUri, endpoint, buildAddUriOptions, tellStatus };
+/**
+ * @param {Aria2Config} config
+ * @param {string} gid
+ * @returns {Promise<{ gid: string, status: string, totalLength: string, completedLength: string, downloadSpeed: string, connections: string, errorCode?: string, errorMessage?: string } | null>}
+ *   null when aria2 has never heard of this GID, which is how a lost session shows up.
+ */
+async function findGid(config, gid) {
+  try {
+    return await tellStatus(config, gid);
+  } catch (error) {
+    if (/GID|not found|is not found/i.test(String(error.message))) return null;
+    throw error;
+  }
+}
+
+/**
+ * aria2 pauses HTTP downloads only when asked with forcePause; plain pause also
+ * works but refuses a download that is still queued.
+ *
+ * A download that has just been added is not pausable for the moment it takes
+ * aria2 to open the file, which arrives as "cannot be paused now"; retrying is
+ * the whole fix, and a user clicking 暂停 immediately would otherwise see it.
+ *
+ * @param {Aria2Config} config
+ * @param {string} gid
+ */
+async function pause(config, gid) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await call(config, 'aria2.forcePause', [gid]);
+      return;
+    } catch (error) {
+      const retryable = /cannot be paused|not found|GID/i.test(String(error.message));
+      if (!retryable || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+}
+
+/**
+ * @param {Aria2Config} config
+ * @param {string} gid
+ */
+async function unpause(config, gid) {
+  try {
+    await call(config, 'aria2.unpause', [gid]);
+  } catch (error) {
+    // Older builds only know forceUnpause; one of the two always exists.
+    if (/method.*not found|未知|not found/i.test(String(error.message))) {
+      await call(config, 'aria2.forceUnpause', [gid]);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Cancel for real: drop the download and its result so the same GID cannot be
+ * resumed by a later tellStopped.
+ *
+ * @param {Aria2Config} config
+ * @param {string} gid
+ */
+async function remove(config, gid) {
+  await call(config, 'aria2.forceRemove', [gid]).catch(() => {});
+  await call(config, 'aria2.removeDownloadResult', [gid]).catch(() => {});
+}
+
+module.exports = {
+  getVersion,
+  addUri,
+  endpoint,
+  buildAddUriOptions,
+  tellStatus,
+  findGid,
+  pause,
+  unpause,
+  remove,
+  call,
+};

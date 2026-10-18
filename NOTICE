@@ -41,4 +41,21 @@ Bundled third-party runtime dependencies, injected into the page at runtime:
   js-md5 0.7.3                     MIT License
 
   Electron 44.8.0                  MIT License
-  aria2 (optional, not bundled)    GPL-2.0-or-later
+
+---
+
+aria2 is bundled as resources/aria2/aria2c.exe and started by the app itself. It
+is a separate program, unmodified, run as a child process over its documented
+JSON-RPC interface; none of its code is linked into this project.
+
+  aria2
+    Copyright (C) 2006, 2019 Tatsuhiro Tsujikawa
+    Source: https://github.com/aria2/aria2 (release-1.37.0)
+    License: GNU General Public License version 2 or later. The full text ships
+    next to the binary as resources/aria2/COPYING, and the author list as
+    resources/aria2/AUTHORS.
+
+Because aria2 is GPL-2.0-or-later and this project is AGPL-3.0-or-later, this
+project's own code is covered by the AGPL and the bundled aria2 binary by the
+GPL. Distributing this repository, or anything built from it, means shipping
+resources/aria2/COPYING together with the binary.

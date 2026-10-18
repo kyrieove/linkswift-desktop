@@ -188,6 +188,39 @@ async function waitForListItems(timeoutMs) {
 }
 
 /**
+ * Click a control by its own words. Baidu's save dialog has no stable class
+ * names, and a button's label is the part that does not churn.
+ *
+ * @param {string | string[]} text
+ * @returns {Promise<{ ok: boolean, matched: string | null }>}
+ */
+async function clickText(text) {
+  return runInPage(`(() => {
+    const wanted = ${JSON.stringify(Array.isArray(text) ? text : [text])};
+    const nodes = Array.from(
+      document.querySelectorAll('a, button, li, div, span, [role="button"], input[type="button"], input[type="submit"]')
+    );
+    const norm = (node) => (node.textContent || '').replace(/\\s+/g, ' ').trim();
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    for (const word of wanted) {
+      const exact = nodes.filter((node) => norm(node) === word && visible(node));
+      const loose = nodes
+        .filter((node) => norm(node).includes(word) && norm(node).length <= word.length + 12 && visible(node))
+        .sort((a, b) => norm(a).length - norm(b).length);
+      const target = exact.sort((a, b) => norm(a).length - norm(b).length)[0] || loose[0];
+      if (target) {
+        target.click();
+        return { ok: true, matched: norm(target) };
+      }
+    }
+    return { ok: false, matched: null };
+  })()`);
+}
+
+/**
  * @param {Step} step
  * @param {string | null} passcode
  */
@@ -196,6 +229,18 @@ async function runStep(step, passcode) {
     case 'sleep':
       await sleep(step.ms);
       return;
+
+    case 'click-text': {
+      const deadline = Date.now() + (step.timeoutMs ?? 10000);
+      for (;;) {
+        const outcome = await clickText(step.text);
+        if (outcome.ok) return;
+        if (Date.now() > deadline) {
+          throw new Error(`页面上找不到「${[].concat(step.text).join('」或「')}」按钮`);
+        }
+        await sleep(POLL_INTERVAL_MS);
+      }
+    }
 
     case 'ensure-anchor': {
       await waitFor(step.ancestor, step.timeoutMs ?? 30000);
@@ -335,11 +380,13 @@ async function runStep(step, passcode) {
 /**
  * @param {Provider} provider
  * @param {string | null} passcode
+ * @param {'share' | 'transfer'} [mode]
  * @returns {Promise<{ ok: true } | { ok: false, step: number, verb: string, selector: string | null, detail: string }>}
  */
-async function runDriver(provider, passcode) {
-  for (let index = 0; index < provider.steps.length; index++) {
-    const step = provider.steps[index];
+async function runDriver(provider, passcode, mode = 'share') {
+  const steps = mode === 'transfer' ? provider.transferSteps ?? [] : provider.steps;
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index];
     try {
       await runStep(step, passcode);
     } catch (error) {
@@ -348,7 +395,11 @@ async function runDriver(provider, passcode) {
         ok: false,
         step: index,
         verb: step.do,
-        selector: step.do === 'sleep' ? null : candidates(step.selector ?? step.selected ?? step.unselected ?? '').join(' 或 '),
+        selector: step.do === 'sleep'
+          ? null
+          : candidates(
+              step.selector ?? step.selected ?? step.unselected ?? step.text ?? '',
+            ).join(' 或 '),
         detail: error.message,
       };
     }

@@ -1,10 +1,10 @@
 # LinkSwift Desktop
 
-粘贴网盘分享链接，程序在后台加载页面并取到直链，推给 aria2、剪贴板或浏览器。只在登录时打开本机 Chrome。
+粘贴网盘分享链接，程序在后台加载页面并取到直链，推给 aria2、剪贴板或浏览器。aria2 随应用启动，不用自己装。只在登录时打开本机 Chrome。
 
 上游是 [hmjz100/LinkSwift](https://github.com/hmjz100/LinkSwift) 这个油猴脚本。桌面版把脚本注入到内置窗口的页面主世界，并补上它需要的 `GM_*` 接口。
 
-本期支持夸克网盘和百度网盘。
+支持夸克网盘、百度网盘、UC 网盘、迅雷云盘。UC 和迅雷的步骤表取自脚本自身的挂载点，尚未在真实分享页上验证：自动点不到时窗口会留着让你点一次「下载助手」，直链照样被程序接住。
 
 ## 运行
 
@@ -19,13 +19,17 @@ npm start
 
 1. 粘贴分享链接。带提取码的链接直接把完整地址贴进来，程序会自己解析。
 2. 需要登录、提取码或授权时，程序会弹出窗口让你处理一次。
-3. 直链拿到后按设置推送。默认推给 aria2。
+3. 直链拿到后按设置推给内置 aria2，开始下载。
+
+任务卡片上的状态分四种：**已拿到链接**、**下载中**（带速度、连接数、剩余时间）、**下载失败**（带错误类型，以及「继续」「重新取链」）、**下载完成**。
+
+下载中可以「暂停」「继续」「取消」。直接关掉软件也不会丢进度：内置 aria2 把会话写在 `%APPDATA%\linkswift-desktop\aria2\session.txt`，下次打开按 GID 找回，没暂停过的任务自动接着下。
 
 ## 设置
 
-推送目标可选 aria2、剪贴板、浏览器。选 aria2 时填 RPC 地址和密钥，程序会先测试连通性。
+下载器可选「内置 aria2」（默认，随软件启动，只监听 127.0.0.1）和「外部 aria2 RPC」（填你自己 aria2 / Motrix 的地址与令牌，可测试连接）。下载目录留空即 `下载\LinkSwift`。
 
-「允许自动转存」控制百度的超限文件处理。开启后，超过 50MB 的文件会先保存到你的百度网盘再取直链，这会往你的网盘里写文件。
+「允许自动转存」控制百度超限文件的处理。开启后，超过 50MB 的文件会先在你的百度网盘里存一份，再把窗口切到「我的网盘」让你点一次下载助手取链；这会往你的网盘里写文件。
 
 ## 上游脚本
 
@@ -37,24 +41,29 @@ npm start
 npm run fetch-userscript
 ```
 
+注入前会对脚本打一处最小补丁：迅雷刷新凭证要用的 `config.$xunlei.api.getAccessToken` 上游没有定义，`src/main/userscript.js` 补上它指向的地址。
+
 ## 验证
 
 探针都可复跑。
 
 ```
-npm run probe:boot       # 用本地页面跑通整个注入和驱动链路
-npm run probe:ui         # 渲染进程 + preload + IPC 的端到端契约
-npm run probe:aria2      # 对真实 aria2 验证 RPC 投递（需先启动 aria2）
-npm run probe:injection  # document-start 注入时机
-npm run probe:throttle   # 隐藏窗口的定时器节流，以及关掉节流后的对照
+npm run check:share-link  # 链接与分享文案解析（四种网盘）
+npm run check:aria2       # aria2.addUri 的选项构造
+npm run check:job         # 任务状态机：多文件合并、大文件转存、登录过期、链接失效、手动兜底
+npm run check:lifecycle   # 真实 aria2：暂停 → 退出 → 重启接着下 → 字节一致（本地慢速 HTTP 服务，不联网）
+npm run probe:boot        # 用本地页面跑通整个注入和驱动链路
+npm run probe:ui          # 渲染进程 + preload + IPC 的端到端契约
+npm run probe:injection   # document-start 注入时机
+npm run probe:throttle    # 隐藏窗口的定时器节流，以及关掉节流后的对照
 ```
 
-`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`，`probe:ui` 写到
-`%TEMP%\linkswift-ui-report.json`。前者用 host resolver 规则把 `pan.quark.cn`
-指到本地页面，后者加载真实的渲染进程和真实 preload，都不是替身。
+`check:lifecycle` 不需要网盘也不需要联网，是「下载一半退出、重开能继续」的回归入口。`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`，`probe:ui` 写到 `%TEMP%\linkswift-ui-report.json`。
 
 ## 许可证
 
 AGPL-3.0-or-later。上游脚本同样是 AGPL-3.0-or-later，署名见 `NOTICE`。
 
-分发本程序时，`NOTICE` 里列出的上游作者署名必须一并保留。
+内置的 aria2 是独立程序、以 GPL-2.0-or-later 分发，许可证全文随二进制放在 `resources/aria2/COPYING`。
+
+分发本程序时，`NOTICE` 里列出的上游作者署名与这两份许可证必须一并保留。

@@ -68,4 +68,31 @@ const { parseShareLink } = require('../src/shared/providers');
   assert.strictEqual(parseShareLink(''), null);
 }
 
+// 8. UC 与迅雷的分享链接
+{
+  const uc = parseShareLink('https://drive.uc.cn/s/9f8e7d6c5b4a3f2e1d0c?public=1');
+  assert(uc, 'UC 分享链接应能解析');
+  assert.strictEqual(uc.provider, 'uc');
+  assert.strictEqual(uc.shareId, '9f8e7d6c5b4a3f2e1d0c');
+
+  const xunlei = parseShareLink('https://pan.xunlei.com/s/VNabc123-_xyz?pwd=7x9k');
+  assert(xunlei, '迅雷分享链接应能解析');
+  assert.strictEqual(xunlei.provider, 'xunlei');
+  assert.strictEqual(xunlei.shareId, 'VNabc123-_xyz');
+  assert.strictEqual(xunlei.passcode, '7x9k');
+}
+
+// 9. 迅雷补丁：上游缺少的 getAccessToken 只补一次，且补在正确的位置
+{
+  const { patchSource } = require('../src/main/userscript');
+  const sample = 'const config = {\n\t$xunlei: {\n\t\tapi: {\n\t\t\tgetLink: "https://api-pan.xunlei.com/drive/v1/files/",\n\t\t}\n\t}\n};';
+  const once = patchSource(sample);
+  assert(
+    once.includes('getAccessToken: "https://xluser-ssl.xunlei.com/v1/auth/token"'),
+    '迅雷刷新令牌的地址应被补进去',
+  );
+  assert.strictEqual(patchSource(once), once, '补过一次之后不应再补');
+  assert.strictEqual(patchSource('no anchor here'), 'no anchor here', '没有锚点时原样返回');
+}
+
 console.log('check:share-link OK');
