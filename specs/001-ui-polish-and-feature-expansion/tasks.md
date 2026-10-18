@@ -19,10 +19,10 @@
 
 **Purpose**: 契约先行。三方契约与注册表是本轮所有故事的公共底座。
 
-- [ ] T001 在 `src/shared/protocol.js` 里为 `failed` 增加可选 `step` / `verb` / `selector` / `hint`，为 `Job` 增加 `stalled`、`scriptVersion`、`scriptOrigin`、`archivedAt`；四个新字段全部可选，旧记录缺字段按缺省值
-- [ ] T002 [P] 在 `src/shared/protocol.js` 定义 `ProviderHealth` 并新增 IPC 名 `archive` / `unarchive` / `purge` / `providerHealth`（`contracts/ipc-and-ui.md` 第一节）
-- [ ] T003 [P] 在 `src/main/store.js` 的 `DEFAULT_SETTINGS` 增加 `archiveLimit: 500`，读取时校验范围 100–2000，越界回落 500
-- [ ] T004 在 `tools/run-checks.js` 登记即将新增的 `check:archive` 与 `check:provider-health`（先登记会让 `npm run check` 失败，这是预期的红灯）
+- [x] T001 在 `src/shared/protocol.js` 里为 `failed` 增加可选 `step` / `verb` / `selector` / `hint`，为 `Job` 增加 `stalled`、`scriptVersion`、`scriptOrigin`、`archivedAt`；四个新字段全部可选，旧记录缺字段按缺省值
+- [x] T002 [P] 在 `src/shared/protocol.js` 定义 `ProviderHealth` 并新增 IPC 名 `archive` / `unarchive` / `purge` / `providerHealth`（`contracts/ipc-and-ui.md` 第一节）
+- [x] T003 [P] 在 `src/main/store.js` 的 `DEFAULT_SETTINGS` 增加 `archiveLimit: 500`，读取时校验范围 100–2000，越界回落 500
+- [x] T004 在 `tools/run-checks.js` 登记即将新增的 `check:archive` 与 `check:provider-health`（先登记会让 `npm run check` 失败，这是预期的红灯）
 
 **Checkpoint**: 契约与注册表就位，`npm run check` 因缺脚本而红——后续每个故事把它逐步变绿。
 
@@ -34,10 +34,10 @@
 
 **⚠️ CRITICAL**: 本阶段完成前，任何用户故事都不要动 `TaskStore`
 
-- [ ] T005 在 `src/main/task-store.js` 把 `MAX_RECORDS` 从 40 改为从设置读取（缺省 500），超出时把最旧的整条记录追加到 `jobs-archive.jsonl` 再移出主文件，追加失败时保留原记录并记日志
-- [ ] T006 在 `src/main/task-store.js` 实现 `archive(ids)` / `unarchive(ids)` / `removeMany(ids)`，只接受 `done` 与 `failed`，其余返回跳过数；归档只写 `archivedAt`，不删任何字段
-- [ ] T007 [P] 新建 `tools/check-archive.js`：造 501 条记录断言主文件 500 条、归档文件恰 1 行且 `id` 为最旧；再断言归档后 `state.files` 与 `progress` 仍在、旧格式记录读回不报错
-- [ ] T008 在 `tools/run-checks.js` 确认 `check:archive` 已被调用且失败时整体非零退出
+- [x] T005 在 `src/main/task-store.js` 把 `MAX_RECORDS` 从 40 改为从设置读取（缺省 500），超出时把最旧的整条记录追加到 `jobs-archive.jsonl` 再移出主文件，追加失败时保留原记录并记日志
+- [x] T006 在 `src/main/task-store.js` 实现 `archive(ids)` / `unarchive(ids)` / `removeMany(ids)`，只接受 `done` 与 `failed`，其余返回跳过数；归档只写 `archivedAt`，不删任何字段
+- [x] T007 [P] 新建 `tools/check-archive.js`：造 501 条记录断言主文件 500 条、归档文件恰 1 行且 `id` 为最旧；再断言归档后 `state.files` 与 `progress` 仍在、旧格式记录读回不报错
+- [x] T008 在 `tools/run-checks.js` 确认 `check:archive` 已被调用且失败时整体非零退出
 
 **Checkpoint**: 存储层可承载 500 条并归档，`npm run check:archive` 绿。
 
@@ -51,12 +51,12 @@
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] 在 `src/main/job.js` 把驱动返回的 `{ step, verb, selector, detail }` 映射进 `state.step` / `state.verb` / `state.selector`，并按失败码生成一句中文 `hint`（`upstream-redesigned` → 「页面结构变了，先点重试拉最新脚本」）
-- [ ] T010 [US1] 在 `src/renderer/renderer.js` 为任务行加 `data-job-id` 与 `data-phase`，状态标签函数区分五种状态（下载中 / 已暂停 / 需你操作一步 / 已失败 / 已完成含部分完成），并给需要人工的任务加直达按钮
-- [ ] T011 [US1] 在 `src/renderer/index.html` 与 `src/renderer/styles.css` 增加诊断块 `.diagnostic`（步骤序号、目标、复制按钮）与停滞提示 `.stall-notice`
-- [ ] T012 [US1] 在 `src/main/job.js` 保证一条任务进入 `needs-human` 不阻塞其他任务的提交与推进：提交入口不做全局串行，只有同一分享链接的处理中去重
-- [ ] T013 [US1] 扩展 `tools/check-job.js`：驱动返回第 3 步超时 → 断言 `state.step === 3` 且 `verb` / `selector` 与驱动一致；断言 `hint` 非空
-- [ ] T014 [P] [US1] 在 `tools/probe/probe-ui.js` 增加断言：五行任务的 `data-phase` 各不相同、状态标签文字正确、诊断块在失败任务上存在
+- [x] T009 [US1] 在 `src/main/job.js` 把驱动返回的 `{ step, verb, selector, detail }` 映射进 `state.step` / `state.verb` / `state.selector`，并按失败码生成一句中文 `hint`（`upstream-redesigned` → 「页面结构变了，先点重试拉最新脚本」）
+- [x] T010 [US1] 在 `src/renderer/renderer.js` 为任务行加 `data-job-id` 与 `data-phase`，状态标签函数区分五种状态（下载中 / 已暂停 / 需你操作一步 / 已失败 / 已完成含部分完成），并给需要人工的任务加直达按钮
+- [x] T011 [US1] 在 `src/renderer/index.html` 与 `src/renderer/styles.css` 增加诊断块 `.diagnostic`（步骤序号、目标、复制按钮）与停滞提示 `.stall-notice`
+- [x] T012 [US1] 在 `src/main/job.js` 保证一条任务进入 `needs-human` 不阻塞其他任务的提交与推进：提交入口不做全局串行，只有同一分享链接的处理中去重
+- [x] T013 [US1] 扩展 `tools/check-job.js`：驱动返回第 3 步超时 → 断言 `state.step === 3` 且 `verb` / `selector` 与驱动一致；断言 `hint` 非空
+- [x] T014 [P] [US1] 在 `tools/probe/probe-ui.js` 增加断言：五行任务的 `data-phase` 各不相同、状态标签文字正确、诊断块在失败任务上存在
 
 **Checkpoint**: US1 独立可验——失败原因是人话，五种状态一眼可辨。
 
@@ -70,10 +70,10 @@
 
 ### Implementation for User Story 2
 
-- [ ] T015 [P] [US2] 在 `src/renderer/renderer.js` 把状态标签与说明文案抽成单处映射表，五种状态各一行，避免标签与文案不同步
-- [ ] T016 [US2] 在 `src/renderer/renderer.js` 为「需你操作一步」的任务在列表行上直接显示要做什么（如「请在弹出的窗口中选择文件」）并提供直达入口按钮
-- [ ] T017 [US2] 在 `src/renderer/renderer.js` 区分空态：筛选后为空显示「筛选为空」与「清除筛选」按钮；无任何任务显示「还没有任务」与粘贴引导
-- [ ] T018 [P] [US2] 在 `tools/probe/probe-ui.js` 断言两种空态文案不同、清除筛选按钮存在且点击后恢复列表
+- [x] T015 [P] [US2] 在 `src/renderer/renderer.js` 把状态标签与说明文案抽成单处映射表，五种状态各一行，避免标签与文案不同步
+- [x] T016 [US2] 在 `src/renderer/renderer.js` 为「需你操作一步」的任务在列表行上直接显示要做什么（如「请在弹出的窗口中选择文件」）并提供直达入口按钮
+- [x] T017 [US2] 在 `src/renderer/renderer.js` 区分空态：筛选后为空显示「筛选为空」与「清除筛选」按钮；无任何任务显示「还没有任务」与粘贴引导
+- [x] T018 [P] [US2] 在 `tools/probe/probe-ui.js` 断言两种空态文案不同、清除筛选按钮存在且点击后恢复列表
 
 **Checkpoint**: US1 与 US2 都能独立工作，界面信息层级成立。
 
@@ -87,13 +87,13 @@
 
 ### Implementation for User Story 3
 
-- [ ] T019 [US3] 在 `src/main/job.js` 的 `submit` 支持整段文本：复用 `src/shared/providers.js` 逐条解析，返回 `{ ok, jobs: [{ raw, jobId?, duplicateOf?, error? }] }`（契约第一节）
-- [ ] T020 [US3] 在 `src/main/job.js` 实现处理中去重：只对 `loading` / `extracting` / `needs-human` / `linked` / `delivering` / `downloading` / `paused` 七种 phase 按 `provider + shareId` 去重，`done` / `failed` 不参与
-- [ ] T021 [US3] 在 `src/renderer/renderer.js` 提交后逐条提示结果：新建几条、重复几条、无法识别几条，互不阻塞
-- [ ] T022 [US3] 在 `src/renderer/index.html` 与 `src/renderer/styles.css` 增加行内多选复选框 `.job-select`、批量操作条 `.bulk-bar`（归档 / 删除）与归档筛选开关 `.filter-archive`
-- [ ] T023 [US3] 在 `src/main/ipc.js` 接入 `linkswift:jobs:archive` / `unarchive` / `purge` 三个通道，转发到 `TaskStore` 的对应方法
-- [ ] T024 [US3] 扩展 `tools/check-share-link.js`：一段中文文本切 3 条、`?pwd=` 与链接正确配对、重复提交返回 `duplicateOf`、已完成后再提交返回新 `jobId`
-- [ ] T025 [P] [US3] 在 `tools/probe/probe-ui.js` 断言多选后批量操作条出现、归档筛选只显示已归档任务
+- [x] T019 [US3] 在 `src/main/job.js` 的 `submit` 支持整段文本：复用 `src/shared/providers.js` 逐条解析，返回 `{ ok, jobs: [{ raw, jobId?, duplicateOf?, error? }] }`（契约第一节）
+- [x] T020 [US3] 在 `src/main/job.js` 实现处理中去重：只对 `loading` / `extracting` / `needs-human` / `linked` / `delivering` / `downloading` / `paused` 七种 phase 按 `provider + shareId` 去重，`done` / `failed` 不参与
+- [x] T021 [US3] 在 `src/renderer/renderer.js` 提交后逐条提示结果：新建几条、重复几条、无法识别几条，互不阻塞
+- [x] T022 [US3] 在 `src/renderer/index.html` 与 `src/renderer/styles.css` 增加行内多选复选框 `.job-select`、批量操作条 `.bulk-bar`（归档 / 删除）与归档筛选开关 `.filter-archive`
+- [x] T023 [US3] 在 `src/main/ipc.js` 接入 `linkswift:jobs:archive` / `unarchive` / `purge` 三个通道，转发到 `TaskStore` 的对应方法
+- [x] T024 [US3] 扩展 `tools/check-share-link.js`：一段中文文本切 3 条、`?pwd=` 与链接正确配对、重复提交返回 `duplicateOf`、已完成后再提交返回新 `jobId`
+- [x] T025 [P] [US3] 在 `tools/probe/probe-ui.js` 断言多选后批量操作条出现、归档筛选只显示已归档任务
 
 **Checkpoint**: 批量入口与归档链路可独立验证。
 
@@ -107,11 +107,11 @@
 
 ### Implementation for User Story 4
 
-- [ ] T026 [US4] 在 `src/main/job.js` 的进度轮询里记录最后一次字节增长时刻，超过 60000ms 且仍在 `downloading` 时置 `stalled: true` 并推送一次事件，字节一增立刻清成 `false`
-- [ ] T027 [US4] 在 `src/renderer/renderer.js` 由 `progress[]` 派生部分完成文案「部分完成 N 失败 / M 完成」，不新增 phase
-- [ ] T028 [US4] 在 `src/renderer/renderer.js` 详情面板逐文件显示状态：`complete → 下载完成`、`error → 下载失败（带 errorMessage）`、有长度 → 字节进度、无进度 → 沿用现有 `doneDetail()`
-- [ ] T029 [US4] 扩展 `tools/check-job.js`：`done` + 1 个 `error` 进度派生部分完成；假时钟推进 61 秒无增长出现 `stalled`，字节增加后清除
-- [ ] T030 [P] [US4] 在 `tools/probe/probe-ui.js` 断言停滞提示与重试按钮存在且按钮可点
+- [x] T026 [US4] 在 `src/main/job.js` 的进度轮询里记录最后一次字节增长时刻，超过 60000ms 且仍在 `downloading` 时置 `stalled: true` 并推送一次事件，字节一增立刻清成 `false`
+- [x] T027 [US4] 在 `src/renderer/renderer.js` 由 `progress[]` 派生部分完成文案「部分完成 N 失败 / M 完成」，不新增 phase
+- [x] T028 [US4] 在 `src/renderer/renderer.js` 详情面板逐文件显示状态：`complete → 下载完成`、`error → 下载失败（带 errorMessage）`、有长度 → 字节进度、无进度 → 沿用现有 `doneDetail()`
+- [x] T029 [US4] 扩展 `tools/check-job.js`：`done` + 1 个 `error` 进度派生部分完成；假时钟推进 61 秒无增长出现 `stalled`，字节增加后清除
+- [x] T030 [P] [US4] 在 `tools/probe/probe-ui.js` 断言停滞提示与重试按钮存在且按钮可点
 
 **Checkpoint**: 进度与结算可独立验证。
 
@@ -143,13 +143,13 @@
 
 ### Implementation for User Story 6
 
-- [ ] T036 [US6] 在 `src/main/task-store.js` 增加 `provider-health.json` 读写：每个网盘只留最近一条 `{ provider, at, ok, code?, hint? }`，文件损坏时视为全「未验证」并记日志
-- [ ] T037 [US6] 在 `src/main/job.js` 任务进入 `done` / `failed` 终态时更新所属网盘的 `ProviderHealth` 记录
-- [ ] T038 [US6] 在 `src/main/ipc.js` 接入 `linkswift:provider:health`，返回四条（含无记录网盘的「未验证」占位）
-- [ ] T039 [US6] 在 `src/renderer/index.html` 与 `src/renderer/renderer.js` 增加设置页能力表 `.provider-health`（能力等级取 `DESIGN.md` 2.3 已核实结论，状态取本机记录）与归档管理 `.archive-count` + 清空归档按钮
-- [ ] T040 [US6] 在 `src/main/job.js` 对不支持网盘的链接在创建任务前返回 `unsupported-provider` 说明，不建任务
-- [ ] T041 [P] [US6] 新建 `tools/check-provider-health.js`：两次终态后只留最近一条；文件损坏时返回全「未验证」
-- [ ] T042 [P] [US6] 在 `tools/probe/probe-ui.js` 断言能力表四行存在、未验证单元格文本为「未验证」
+- [x] T036 [US6] 在 `src/main/task-store.js` 增加 `provider-health.json` 读写：每个网盘只留最近一条 `{ provider, at, ok, code?, hint? }`，文件损坏时视为全「未验证」并记日志
+- [x] T037 [US6] 在 `src/main/job.js` 任务进入 `done` / `failed` 终态时更新所属网盘的 `ProviderHealth` 记录
+- [x] T038 [US6] 在 `src/main/ipc.js` 接入 `linkswift:provider:health`，返回四条（含无记录网盘的「未验证」占位）
+- [x] T039 [US6] 在 `src/renderer/index.html` 与 `src/renderer/renderer.js` 增加设置页能力表 `.provider-health`（能力等级取 `DESIGN.md` 2.3 已核实结论，状态取本机记录）与归档管理 `.archive-count` + 清空归档按钮
+- [x] T040 [US6] 在 `src/main/job.js` 对不支持网盘的链接在创建任务前返回 `unsupported-provider` 说明，不建任务
+- [x] T041 [P] [US6] 新建 `tools/check-provider-health.js`：两次终态后只留最近一条；文件损坏时返回全「未验证」
+- [x] T042 [P] [US6] 在 `tools/probe/probe-ui.js` 断言能力表四行存在、未验证单元格文本为「未验证」
 
 **Checkpoint**: 六类故事各自可独立验证。
 
