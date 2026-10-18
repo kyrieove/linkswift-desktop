@@ -1,10 +1,10 @@
-# LinkSwift Desktop
+# Unidownload
 
 粘贴网盘分享链接，程序在后台加载页面并取到直链，推给 aria2、剪贴板或浏览器。aria2 随应用启动，不用自己装。只在登录时打开本机 Chrome。
 
-上游是 [hmjz100/LinkSwift](https://github.com/hmjz100/LinkSwift) 这个油猴脚本。桌面版把脚本注入到内置窗口的页面主世界，并补上它需要的 `GM_*` 接口。
+上游是 [hmjz100/LinkSwift](https://github.com/hmjz100/LinkSwift) 这个油猴脚本。桌面版把脚本注入到内置窗口的页面主世界，并补上它需要的 `GM_*` 接口。仓库内部标识（包名 `linkswift-desktop`、`persist:linkswift` 分区、`%APPDATA%\linkswift-desktop` 数据目录、IPC 名）保持不变，所以从 LinkSwift 桌面版升级过来时旧配置、网盘登录态和未完成的下载都还在。
 
-支持夸克网盘、百度网盘、UC 网盘、迅雷云盘。UC 和迅雷的步骤表取自脚本自身的挂载点：自动点不到时窗口会留着让你点一次「下载助手」，直链照样被程序接住。
+支持夸克网盘、百度网盘、UC 网盘、迅雷云盘。UC 和迅雷的步骤表取自脚本自身的挂载点：自动点不到时窗口会留着让你点一次「下载助手」，直链照样被程序接住。UC 和迅雷驱动仍是实验性实现，界面按驱动能力显示入口，不隐藏它们的边界。
 
 UC 和夸克的下载直链要求登录态，程序会把应用分区里该域名该带的 Cookie 一起交给 aria2；没登录时会明确说「403…要求登录态」并给「登录网盘」。迅雷的凭证存在页面自己的 localStorage 里，所以「需登录」时会直接把窗口开到 `pan.xunlei.com/login`，登录完自动继续，也可以手动点「我已登录，继续」。
 
@@ -18,6 +18,8 @@ npm start
 
 首次运行会在 `%APPDATA%\linkswift-desktop` 建立用户数据目录，网盘登录态存在那里。这个目录含多网盘凭证，按密码本对待。
 
+数据目录名沿用旧内部标识 `linkswift-desktop` 而不是可见名称，这是有意的：改名会让旧设置、登录态、aria2 会话和续传记录找不到。
+
 ## 怎么用
 
 1. 粘贴分享链接。带提取码的链接直接把完整地址贴进来，程序会自己解析。
@@ -28,11 +30,23 @@ npm start
 
 下载中可以「暂停」「继续」「取消」。直接关掉软件也不会丢进度：内置 aria2 把会话写在 `%APPDATA%\linkswift-desktop\aria2\session.txt`，下次打开按 GID 找回，没暂停过的任务自动接着下。
 
+## 界面
+
+第三版界面：左侧窄主导航（任务 / 网盘来源 / 设置），任务区上方是搜索、排序和新建，右侧按需滑出任务详情（概览 / 文件 / 活动与诊断）。侧栏列出状态与四个网盘来源的计数，计数来自真实任务。
+
+- 搜索、排序、状态筛选与网盘来源筛选可以组合使用；筛选后没有结果会明确说明是「筛选为空」还是「还没有任务」。
+- 勾选多个任务后可批量暂停 / 继续 / 取消，只对符合条件的任务执行，部分失败会单独报出来，不会被整体「成功」提示盖掉。
+- 快捷键：`Ctrl+K` 聚焦搜索，`N` 新建任务，`Esc` 关闭详情或弹窗。
+- 主题在侧栏或设置里切换，浅色 / 深色，选择记在本机渲染进程的 localStorage，不写进设置文件。
+- 「已完成」只在确有本地下载进度时表示下载完成；交给剪贴板或浏览器、没有本地字节的任务显示「已投递」，历史任务也不会因为当前设置被改标成别的出口。
+
+应用图标与标志的矢量源、位图和重建命令见 [`resources/brand/README.md`](resources/brand/README.md)。
+
 ## 设置
 
 下载器可选「内置 aria2」（默认，随软件启动，只监听 127.0.0.1）和「外部 aria2 RPC」（填你自己 aria2 / Motrix 的地址与令牌，可测试连接）。下载目录留空即 `下载\LinkSwift`。
 
-「允许自动转存」控制百度超限文件的处理。开启后，超过 50MB 的文件会先在你的百度网盘里存一份，再把窗口切到「我的网盘」让你点一次下载助手取链；这会往你的网盘里写文件。
+「允许自动转存」是百度与迅雷共用的全局授权，默认关闭。开启后，百度超过 50MB 的文件会先在你的百度网盘里存一份，迅雷分享也会先转存到「我的云盘」，再把窗口切到网盘助手让你点一次取链；这会往你自己的网盘里写文件。
 
 ## 上游脚本
 
@@ -51,17 +65,21 @@ npm run fetch-userscript
 探针都可复跑。
 
 ```
+npm run check             # 一次跑完下面的语法检查、全部检查与 UI 探针
 npm run check:share-link  # 链接与分享文案解析（四种网盘）
 npm run check:aria2       # aria2.addUri 的选项构造
 npm run check:job         # 任务状态机：多文件合并、大文件转存、登录过期、链接失效、手动兜底
 npm run check:lifecycle   # 真实 aria2：暂停 → 退出 → 重启接着下 → 字节一致（本地慢速 HTTP 服务，不联网）
+npm run check:brand       # 品牌资源尺寸/格式与命名兼容性
+npm run check:runner      # 检查启动器本身：子进程失败/信号必须让整轮失败
+npm run check:negative    # 负例：故意坏的检查、泄漏的探针必须非零退出
 npm run probe:boot        # 用本地页面跑通整个注入和驱动链路
 npm run probe:ui          # 渲染进程 + preload + IPC 的端到端契约
 npm run probe:injection   # document-start 注入时机
 npm run probe:throttle    # 隐藏窗口的定时器节流，以及关掉节流后的对照
 ```
 
-`check:lifecycle` 不需要网盘也不需要联网，是「下载一半退出、重开能继续」的回归入口。`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`，`probe:ui` 写到 `%TEMP%\linkswift-ui-report.json`。
+`npm run check` 是唯一入口，任何一步非零退出都不会被包装成成功。`check:lifecycle` 不需要网盘也不需要联网，是「下载一半退出、重开能继续」的回归入口。`probe:boot` 把报告写到 `%TEMP%\linkswift-boot-report.json`，`probe:ui` 写到 `%TEMP%\linkswift-ui-report.json`，截图同为 `%TEMP%\linkswift-probe-*.png`。
 
 ## 许可证
 

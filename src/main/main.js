@@ -21,6 +21,16 @@ const PARTITION = 'persist:linkswift';
 const NETDISK_PRELOAD = path.join(__dirname, '..', 'preload', 'netdisk-preload.js');
 const RENDERER_PRELOAD = path.join(__dirname, '..', 'preload', 'renderer-preload.js');
 
+/** Visible product name. package.json keeps `name` so userData stays put. */
+const PRODUCT_NAME = 'Unidownload';
+
+/** The icon lives beside the source tree, or inside the asar's resources. */
+function brandIconPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'brand', 'unidownload.ico')
+    : path.join(__dirname, '..', '..', 'resources', 'brand', 'unidownload.ico');
+}
+
 /** @type {BrowserWindow | null} */
 let uiWindow = null;
 /** @type {JobManager} */
@@ -35,8 +45,9 @@ function createUiWindow() {
     height: 760,
     minWidth: 720,
     minHeight: 520,
-    title: 'LinkSwift Desktop',
-    backgroundColor: '#1b1b1f',
+    title: PRODUCT_NAME,
+    icon: brandIconPath(),
+    backgroundColor: '#233c2e',
     show: true,
     webPreferences: {
       preload: RENDERER_PRELOAD,

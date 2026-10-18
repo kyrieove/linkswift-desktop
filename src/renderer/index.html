@@ -1,221 +1,33 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LinkSwift 网盘直链助手</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <header class="appbar">
-      <span class="appbar__mark" aria-hidden="true"></span>
-      <h1 class="appbar__title">LinkSwift</h1>
-      <span class="appbar__sub">网盘直链助手</span>
-    </header>
-
-    <section class="composer" aria-labelledby="composer-label">
-      <form id="submit-form" novalidate>
-        <label class="composer__label" id="composer-label" for="link-input">粘贴分享链接</label>
-        <div class="composer__row">
-          <input
-            id="link-input"
-            class="composer__input"
-            type="text"
-            name="link"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            aria-describedby="composer-hint"
-            placeholder="https://pan.quark.cn/s/… 或 https://pan.baidu.com/s/…"
-          />
-          <button id="paste-btn" class="btn" type="button">粘贴</button>
-          <button id="submit-btn" class="btn btn--primary" type="submit">提取直链</button>
-        </div>
-        <p id="composer-error" class="note note--error" role="alert" hidden></p>
-        <p id="composer-status" class="note" role="status" hidden></p>
-        <p id="composer-hint" class="composer__hint">
-          支持夸克、百度、UC、迅雷云盘的分享链接，回车即可提交。整段分享文案直接粘贴即可，链接和提取码会自动识别。
-        </p>
-      </form>
-    </section>
-
-    <main class="workspace">
-      <details class="settings" id="settings">
-        <summary class="settings__summary">
-          <span class="settings__summary-label">设置</span>
-          <span class="settings__summary-meta" id="settings-summary">推送目标</span>
-        </summary>
-        <div class="settings__body">
-          <div class="settings__group" role="radiogroup" aria-labelledby="delivery-label">
-            <p class="settings__legend" id="delivery-label">推送目标</p>
-            <div class="segmented">
-              <input
-                class="segmented__input"
-                type="radio"
-                name="delivery"
-                id="delivery-aria2"
-                value="aria2"
-              />
-              <label class="segmented__label" for="delivery-aria2">aria2</label>
-              <input
-                class="segmented__input"
-                type="radio"
-                name="delivery"
-                id="delivery-clipboard"
-                value="clipboard"
-              />
-              <label class="segmented__label" for="delivery-clipboard">剪贴板</label>
-              <input
-                class="segmented__input"
-                type="radio"
-                name="delivery"
-                id="delivery-browser"
-                value="browser"
-              />
-              <label class="segmented__label" for="delivery-browser">浏览器</label>
-            </div>
-            <p class="field__hint" id="delivery-hint"></p>
-          </div>
-
-          <div class="settings__group" role="radiogroup" aria-labelledby="downloader-label">
-            <p class="settings__legend" id="downloader-label">下载器</p>
-            <div class="segmented">
-              <input
-                class="segmented__input"
-                type="radio"
-                name="aria2-mode"
-                id="mode-builtin"
-                value="builtin"
-              />
-              <label class="segmented__label" for="mode-builtin">内置 aria2</label>
-              <input
-                class="segmented__input"
-                type="radio"
-                name="aria2-mode"
-                id="mode-external"
-                value="external"
-              />
-              <label class="segmented__label" for="mode-external">外部 aria2 RPC</label>
-            </div>
-            <p class="field__hint" id="mode-hint"></p>
-            <p class="note" id="aria2-status" role="status" hidden></p>
-            <div class="settings__actions" id="builtin-actions">
-              <button id="restart-aria2" class="btn" type="button">重启内置下载器</button>
-              <button id="open-download-dir" class="btn" type="button">打开下载目录</button>
-            </div>
-          </div>
-
-          <div class="settings__group">
-            <label class="field__label" for="aria2-dir">下载目录</label>
-            <div class="directory-picker">
-              <input
-                class="input input--mono"
-                id="aria2-dir"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="留空使用「下载\LinkSwift」"
-              />
-              <button id="browse-aria2-dir" class="btn" type="button">浏览…</button>
-            </div>
-            <p class="field__hint">内置下载器直接写这个目录；外部 aria2 用它覆盖自己的 dir</p>
-          </div>
-
-          <fieldset class="settings__group" id="rpc-fields">
-            <legend class="settings__legend">aria2 RPC</legend>
-            <div class="settings__grid">
-              <div class="field">
-                <label class="field__label" for="aria2-domain">地址</label>
-                <input
-                  class="input input--mono"
-                  id="aria2-domain"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="http://localhost"
-                />
-                <p class="field__hint">含协议</p>
-              </div>
-              <div class="field">
-                <label class="field__label" for="aria2-port">端口</label>
-                <input
-                  class="input input--mono"
-                  id="aria2-port"
-                  type="text"
-                  inputmode="numeric"
-                  autocomplete="off"
-                  placeholder="6800"
-                />
-                <p class="field__hint">aria2 默认 6800，Motrix 为 16800</p>
-              </div>
-              <div class="field">
-                <label class="field__label" for="aria2-path">路径</label>
-                <input
-                  class="input input--mono"
-                  id="aria2-path"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="/jsonrpc"
-                />
-                <p class="field__hint">通常为 /jsonrpc</p>
-              </div>
-              <div class="field">
-                <label class="field__label" for="aria2-token">令牌</label>
-                <input
-                  class="input input--mono"
-                  id="aria2-token"
-                  type="password"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="RPC 密钥，未设置为空"
-                />
-                <label class="checkbox">
-                  <input type="checkbox" id="show-token" />
-                  <span>显示令牌</span>
-                </label>
-              </div>
-            </div>
-            <div class="settings__actions">
-              <button id="test-aria2" class="btn" type="button">测试连接</button>
-              <span id="aria2-test-result" class="note" role="status" hidden></span>
-            </div>
-          </fieldset>
-
-          <label class="checkbox checkbox--warn">
-            <input type="checkbox" id="allow-transfer" />
-            <span>
-              允许自动转存到我的网盘。百度分享里超过 50MB 的文件、以及迅雷的分享，都无法直接从分享页取直链，勾选后程序会先把文件保存到你自己的网盘（百度、迅雷），再从你的网盘取链；不勾选则这类任务会停在「需先转存」。
-            </span>
-          </label>
-
-          <label class="checkbox">
-            <input type="checkbox" id="auto-submit" />
-            <span>
-              粘贴后自动开始提取。识别到整段分享文案（含提取码）就直接提交，不用再点一次「提取直链」。
-            </span>
-          </label>
-
-          <div class="settings__actions">
-            <button id="save-settings" class="btn btn--primary" type="button">保存设置</button>
-            <span id="settings-status" class="note note--ok" role="status" hidden></span>
-            <span id="settings-error" class="note note--error" role="alert" hidden></span>
-          </div>
-        </div>
-      </details>
-
-      <section class="jobs" aria-labelledby="jobs-title">
-        <div class="jobs__head">
-          <h2 class="jobs__title" id="jobs-title">任务</h2>
-          <span class="jobs__count" id="jobs-count"></span>
-        </div>
-        <p class="empty" id="jobs-empty">还没有任务。粘贴一个分享链接开始。</p>
-        <ul class="jobs__list" id="job-list"></ul>
-      </section>
-    </main>
-
-    <p class="sr-only" id="live-region" role="status"></p>
-
-    <script defer src="renderer.js"></script>
-  </body>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Unidownload 网盘直链助手</title>
+<link rel="icon" type="image/png" href="../../resources/brand/unidownload-icon-256.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-bolt" viewBox="0 0 24 24"><path d="m14 2-9 12h7l-2 8 9-12h-7z"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol><symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6 18a5 5 0 0 1-1-10 7 7 0 0 1 13-1 5.5 5.5 0 0 1 0 11z"/></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-1 3-3 1v3l-2 2 2 2v3l3 1 1 3h6l1-3 3-1v-3l2-2-2-2V7l-3-1-1-3z"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="m8 12 3 3 5-6"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v6m0 3v.1"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8z"/></symbol><symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r=".7"/><circle cx="12" cy="12" r=".7"/><circle cx="19" cy="12" r=".7"/></symbol><symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6v18h13V8zM14 3v6h5M9 13h6m-6 3h4"/></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h7l2 3h9v12H3z"/></symbol><symbol id="i-video" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="m10 8 6 4-6 4z"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></symbol><symbol id="i-link" viewBox="0 0 24 24"><path d="m9 15 6-6m-7 4-2 2a4 4 0 0 0 6 6l3-3m1-7 2-2a4 4 0 0 0-6-6L9 6"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 3m0 3v.1"/></symbol><symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol><symbol id="i-open" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L11 13M10 4H4v16h16v-6"/></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V3h6v4M6 7l1 14h10l1-14M10 11v6m4-6v6"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6"/></symbol><symbol id="i-clipboard" viewBox="0 0 24 24"><path d="M8 5H4v16h16V5h-4"/><rect x="8" y="2" width="8" height="6" rx="2"/></symbol>
+</defs></svg>
+<div class="shell">
+<div class="titlebar"><div class="titlebrand"><svg class="brandmark" viewBox="0 0 256 256" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M16 32 H54 V146 A74 74 0 0 0 202 146 V32 H240 V146 A112 112 0 0 1 16 146 Z"/><path fill="currentColor" d="M110 66 H146 V116 H180 L128 172 L76 116 H110 Z"/></svg>Unidownload <span>网盘直链助手</span></div><div class="titleend"></div></div>
+<nav class="rail" aria-label="主导航"><div class="logo"><svg class="brandmark" viewBox="0 0 256 256" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M16 32 H54 V146 A74 74 0 0 0 202 146 V32 H240 V146 A112 112 0 0 1 16 146 Z"/><path fill="currentColor" d="M110 66 H146 V116 H180 L128 172 L76 116 H110 Z"/></svg></div><button class="railbutton active" data-page="tasks" aria-label="下载任务" title="下载任务"><svg><use href="#i-download"/></svg></button><button class="railbutton" data-page="sources" aria-label="网盘来源" title="网盘来源"><svg><use href="#i-cloud"/></svg></button><button class="railbutton" data-page="settings" aria-label="设置" title="设置"><svg><use href="#i-settings"/></svg></button><div class="railgap"></div><button class="railbutton" id="theme" aria-label="切换深色主题" title="切换主题"><svg><use href="#i-sun"/></svg></button><button class="railbutton" id="about" aria-label="设计说明" title="设计说明"><svg><use href="#i-help"/></svg></button></nav>
+<aside class="sidebar"><h2 class="sideheading">我的下载</h2><div id="filters"></div><div class="sidesection">网盘来源</div><button class="sideitem" data-source="quark"><span class="providerdot quark"></span>夸克网盘<span class="counter" id="quark-count">0</span></button><button class="sideitem" data-source="baidu"><span class="providerdot baidu"></span>百度网盘<span class="counter" id="baidu-count">0</span></button><button class="sideitem" data-source="uc"><span class="providerdot uc"></span>UC 网盘<span class="counter" id="uc-count">0</span></button><button class="sideitem" data-source="xunlei"><span class="providerdot xunlei"></span>迅雷云盘<span class="counter" id="xunlei-count">0</span></button><button class="sideitem" data-page="sources"><svg><use href="#i-cloud"/></svg>全部网盘</button><div class="sidebottom"><div class="speedbox"><div class="speedline"><span>总下载速度</span><svg style="width:13px;height:13px"><use href="#i-download"/></svg></div><div class="speednumber"><span id="total-speed">0.0</span> <small>B/s</small></div></div><button class="engine" id="engine-status-btn" data-page="settings"><span class="dot"></span><span id="engine-status-text">内置 aria2</span><span id="engine-status-sub" style="margin-left:auto">检查中</span></button></div></aside>
+<main class="work"><header class="pageheader"><div><h1 class="pagetitle" id="page-title">全部任务</h1><p class="subtitle" id="page-subtitle">文件在哪里，下载到哪一步，一眼看清。</p></div><button class="button primary" id="new-task"><svg><use href="#i-plus"/></svg>新建任务</button></header>
+<section id="tasks-page" style="display:flex;flex-direction:column;flex:1;min-height:0"><div class="toolbar"><label class="searchbox"><svg><use href="#i-search"/></svg><input id="search" placeholder="搜索文件名或网盘" aria-label="搜索文件名或网盘"><span class="key">Ctrl K</span></label><div class="tools"><select id="sort" aria-label="任务排序"><option value="new">最新添加</option><option value="old">最早添加</option><option value="name">按文件名</option></select><span class="separator"></span><button class="button quiet small" id="batch-pause" title="暂停所有正在下载的任务"><svg><use href="#i-pause"/></svg><span class="batchlabel">全部暂停</span></button></div></div><div class="mobilefilters" id="mobile-filters"></div>
+<div class="attention" id="attention" hidden><div class="attext"><svg><use href="#i-shield"/></svg><span id="attention-text">0 个任务需要你完成验证，其他下载不受影响。</span></div><button id="review-human">去处理 <span aria-hidden="true">→</span></button></div>
+<div class="taskbody"><div class="taskmain"><div class="listhead"><label class="selectall"><input type="checkbox" id="select-all" aria-label="选择当前列表全部任务"><span id="selection-label">文件 / 任务</span></label><span id="visible-count"><span id="jobs-count"></span></span><div id="selection-actions" hidden><button class="button quiet small" id="selected-pause">暂停</button><button class="button quiet small" id="selected-resume">继续</button><button class="button quiet small danger" id="selected-cancel">取消</button></div></div><div class="rows" id="rows"><div id="job-list" style="display:contents"></div></div><p class="empty" id="jobs-empty" hidden>还没有任务。粘贴一个分享链接开始。</p><footer class="taskfooter"><span id="task-summary">0 个任务</span><button id="open-folder" type="button"><svg><use href="#i-folder"/></svg><span id="footer-directory">下载目录</span><svg><use href="#i-open"/></svg></button></footer></div><aside class="drawer" id="drawer" aria-label="任务详情" hidden></aside></div></section>
+<section class="pageview" id="sources-page" hidden><p class="sourceintro">百度、夸克、UC、迅雷统一管理，按任务显示登录、转存和手动处理入口。</p><div id="source-list"></div><div class="detailnote" style="max-width:730px;margin-top:28px">分享文案中的链接和提取码会一起识别。需要登录时，夸克、百度和 UC 使用浏览器登录流程；迅雷使用应用内的网盘窗口。迅雷分享需要先转存，再由你在「我的云盘」中选文件并通过助手推送。这里展示交互入口。</div></section>
+<section class="pageview" id="settings-page" hidden><div class="settingslayout"><nav class="settingsnav" aria-label="设置分类"><button class="active" data-settingtab="download">下载与保存</button><button data-settingtab="behavior">解析与行为</button><button data-settingtab="appearance">外观</button></nav><form class="settingscontent" id="settings-form"><section data-settings="download"><h2>下载与保存</h2><p>开箱即用，也保留你习惯的下载方式。</p><div class="setting"><div><label for="delivery">获取直链后</label><p id="delivery-hint">决定直链交给谁处理</p></div><select id="delivery"><option value="aria2">使用 aria2 下载</option><option value="clipboard">复制直链</option><option value="browser">浏览器下载</option></select></div><div class="setting" id="engine-setting"><div><label for="engine-mode">下载引擎</label><p id="mode-hint">内置引擎随应用启动；外部引擎需要 RPC 配置</p></div><select id="engine-mode"><option value="builtin">内置 aria2</option><option value="external">外部 aria2 RPC</option></select></div><div id="rpc-fields" hidden><div class="formgrid"><div class="field"><label for="rpc-host">RPC 地址</label><input id="rpc-host" value="http://127.0.0.1"></div><div class="field"><label for="rpc-port">端口</label><input id="rpc-port" value="6800" inputmode="numeric"></div><div class="field"><label for="rpc-path">路径</label><input id="rpc-path" value="/jsonrpc"></div><div class="field"><label for="rpc-token">RPC 令牌</label><input id="rpc-token" type="password" autocomplete="off" placeholder="未设置则留空"></div></div><label class="help" style="display:flex;gap:7px;align-items:center;margin-top:13px"><input type="checkbox" id="show-token">显示令牌</label><div style="margin-top:12px"><button class="button secondary small" type="button" id="test-connection">测试连接</button><span id="aria2-test-result" class="note" role="status" style="margin-left:10px" hidden></span></div></div><div class="setting"><div><label for="save-dir">保存位置</label><p>内置下载器直接写这个目录；外部 aria2 用它覆盖自己的 dir</p></div><div style="display:flex;gap:8px;max-width:320px;width:60%"><input id="save-dir" style="flex:1;min-width:0;border:1px solid var(--line);padding:8px 10px;background:var(--panel);font-size:11px" value=""><button class="button secondary small" type="button" id="browse-dir">浏览…</button></div></div><div class="setting" id="engine-tools"><div>引擎状态<p id="aria2-status">内置下载引擎状态</p></div><div style="display:flex;gap:6px"><button class="button quiet small" type="button" id="restart-engine">重启引擎</button><button class="button secondary small" type="button" id="open-download-dir">打开下载目录</button></div></div></section>
+<section data-settings="behavior" hidden><h2>解析与行为</h2><p>让常用操作更直接，同时保留明确的授权。</p><div class="setting"><div><label for="auto-submit">粘贴后自动提取</label><p>识别整段分享文案（含提取码）后直接开始，不用多点一次</p></div><input class="toggle" id="auto-submit" type="checkbox"></div><div class="setting"><div><label for="allow-transfer">允许自动转存到我的网盘</label><p>百度部分文件与迅雷分享需要先转存。开启即允许应用保存到你自己的网盘；未开启前相关任务停留在「需先转存」。</p></div><input class="toggle" id="allow-transfer" type="checkbox"></div><div class="detailnote">遇到验证码时暂停该任务并提示处理。处理完成后继续解析，其他任务可以继续下载。</div></section>
+<section data-settings="appearance" hidden><h2>外观</h2><p>以内容为主，减少持续使用时的视觉干扰。</p><div class="setting"><div><label for="appearance-mode">界面主题</label><p>在侧边栏也可以随时切换</p></div><select id="appearance-mode"><option value="light">浅色</option><option value="dark">深色</option></select></div><div class="detailnote">浅色使用冷白与灰绿色，深色降低大面积明暗反差。状态同时使用文字与图标表示。</div></section><div class="settingssave"><span id="settings-status" class="note note--ok" role="status" style="margin-right:auto;font-size:12px" hidden></span><span id="settings-error" class="note note--error" role="alert" style="margin-right:auto;font-size:12px" hidden></span><button class="button primary" id="save-settings" type="submit">保存设置</button></div></form></div></section>
+</main><footer class="bottomline"><span><span class="dot"></span>Unidownload · 多网盘直链下载</span><span class="reference">Unidownload</span><span>V3 / 2026.10.18</span></footer></div>
+<dialog class="dialog" id="create-dialog" aria-labelledby="create-title"><form id="submit-form"><header class="dialoghead"><div><h2 id="create-title">添加一个新下载</h2><p>分享文案直接粘贴，剩下的交给 Unidownload。</p></div><button class="iconbtn" type="button" id="close-create" aria-label="关闭新建任务"><svg><use href="#i-close"/></svg></button></header><div class="dialogbody"><div class="labelrow"><label for="link-input">分享链接或完整文案</label><button type="button" id="paste"><svg><use href="#i-clipboard"/></svg>从剪贴板粘贴</button></div><textarea class="shareinput" id="link-input" name="link" placeholder="粘贴百度、夸克、UC 或迅雷网盘分享文案…"></textarea><p class="help">自动识别链接与提取码，无需手动整理。</p><p class="error" id="create-error" role="alert" hidden></p><div class="newoptions"><span style="font-size:11px">获取直链后</span><div class="outputchoices"><label><input type="radio" name="new-delivery" value="aria2" checked>直接下载</label><label><input type="radio" name="new-delivery" value="clipboard">复制直链</label><label><input type="radio" name="new-delivery" value="browser">浏览器下载</label></div><div class="field"><label for="new-dir">保存位置 <small style="color:var(--muted)">· 沿用全局设置</small></label><input id="new-dir" value="" readonly></div></div></div><footer class="dialogfoot"><div></div><div><button class="button secondary" type="button" id="cancel-create">取消</button><button class="button primary" id="submit-btn" type="submit"><svg><use href="#i-download"/></svg>开始提取</button></div></footer></form></dialog>
+<dialog class="dialog" id="info-dialog" aria-labelledby="info-title"><div class="dialoghead"><div><h2 id="info-title">Unidownload</h2><p>网盘直链助手 · 第三版界面</p></div><button class="iconbtn" id="close-info" aria-label="关闭设计说明"><svg><use href="#i-close"/></svg></button></div><div class="dialogbody"><p style="font-size:12px;line-height:2">支持百度网盘、夸克网盘、UC 网盘、迅雷云盘多网盘直链解析与下载。多文件进度、直链复制、请求头查看与断点续传。<br><br>快捷键：Ctrl+K 搜索，N 新建任务，Esc 关闭详情或弹窗。</p></div></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<p class="sr-only" id="live-region" role="status" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0"></p>
+<script defer src="renderer.js"></script>
+</body>
 </html>

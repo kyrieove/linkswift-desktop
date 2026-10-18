@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Unidownload icon: the U ring and the arrow in mint on a deep green rounded tile.
+
+  Same two shapes as unidownload-mark.svg, recoloured for the tile so the arrow
+  reads as a solid mint arrow next to the mint U.
+
+  Vector only (no embedded bitmap). ASCII-only source.
+  Regenerate every PNG/ICO with:  npm run brand
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" fill="none">
+  <title>Unidownload</title>
+  <rect width="256" height="256" rx="56" fill="#233c2e"/>
+  <path fill="#d0efb5" fill-rule="evenodd" d="
+    M16 32 H54 V146 A74 74 0 0 0 202 146 V32 H240
+    V146 A112 112 0 0 1 16 146 Z
+  "/>
+  <path fill="#d0efb5" d="M110 66 H146 V116 H180 L128 172 L76 116 H110 Z"/>
+</svg>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Unidownload mark: the letter U with a downward arrow between its arms.
+
+  Composed from two independent shapes so each can be checked alone:
+    - U ring: one evenodd path (outer 16..240 x 32..208, inner 54..202, open top)
+    - arrow : its own filled path, 36px shaft from y=66, head point at y=172
+
+  The arrow lives in the U's inner counter. It is a solid shape in the SAME
+  colour, with a transparent gap around it, so the mark stays flat #233c2e on
+  any background and never needs a white knockout.
+
+  Vector only (no embedded bitmap). ASCII-only source.
+  Regenerate every PNG/ICO with:  npm run brand
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" fill="none">
+  <title>Unidownload</title>
+  <path fill="#233c2e" fill-rule="evenodd" d="
+    M16 32 H54 V146 A74 74 0 0 0 202 146 V32 H240
+    V146 A112 112 0 0 1 16 146 Z
+  "/>
+  <path fill="#233c2e" d="M110 66 H146 V116 H180 L128 172 L76 116 H110 Z"/>
+</svg>

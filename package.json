@@ -8,6 +8,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
+    "check": "node tools/run-checks.js",
     "fetch-userscript": "node scripts/fetch-userscript.js",
     "probe:boot": "electron tools/probe/probe-boot.js",
     "probe:aria2": "node tools/probe/probe-aria2.js",
@@ -18,7 +19,11 @@
     "check:aria2": "node tools/check-aria2-options.js",
     "check:share-link": "node tools/check-share-link.js",
     "check:job": "node tools/check-job.js",
-    "check:lifecycle": "node tools/probe/check-aria2-lifecycle.js"
+    "check:lifecycle": "node tools/probe/check-aria2-lifecycle.js",
+    "check:runner": "node tools/check-runner.js",
+    "check:negative": "node tools/probe/neg-run-checks.js",
+    "check:brand": "node tools/check-brand.js",
+    "brand": "electron tools/generate-brand.js"
   },
   "dependencies": {
     "@sweetalert2/theme-dark": "5.0.26",

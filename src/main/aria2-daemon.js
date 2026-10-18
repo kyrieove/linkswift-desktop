@@ -200,25 +200,34 @@ class Aria2Daemon {
     return this.status();
   }
 
-  /** Ask aria2 to save its session, then stop the child. */
+  /** Ask aria2 to save its session, then stop the child. Throws if it refuses to exit. */
   async stop() {
     const config = this.config();
+    const child = this.child;
+    const stillRunning = () => Boolean(child) && child.exitCode === null && child.signalCode === null;
     this.stopping = true;
     try {
-      if (this.child) {
+      if (child) {
         await aria2.call(config, 'aria2.saveSession', []).catch(() => {});
         await aria2.call(config, 'aria2.shutdown', []).catch(() => {});
         const deadline = Date.now() + 5000;
-        while (this.child && this.child.exitCode === null && Date.now() < deadline) {
+        while (stillRunning() && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        if (this.child && this.child.exitCode === null) this.child.kill();
+        if (stillRunning()) {
+          child.kill();
+          const killDeadline = Date.now() + 3000;
+          while (stillRunning() && Date.now() < killDeadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
       }
     } finally {
       this.child = null;
       this.version = null;
       this.stopping = false;
     }
+    if (stillRunning()) throw new Error(`aria2 process ${child.pid} is still running after stop()`);
   }
 
   /** @returns {string} */
