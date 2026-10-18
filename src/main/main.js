@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, session } = require('electron');
 const path = require('node:path');
 
 const { PUSH } = require('../shared/protocol');
@@ -80,6 +80,11 @@ function aria2BinaryPath() {
 }
 
 async function main() {
+  // The UI carries its own navigation, so the native File/Edit/View/Window menu
+  // bar would only take a row of the window and offer nothing the app lacks.
+  // Renderer shortcuts (Ctrl+K, N, Esc) are handled in the page, not here.
+  Menu.setApplicationMenu(null);
+
   const userDataDir = app.getPath('userData');
   const store = new Store(userDataDir);
   const userscript = new UserscriptSource({
