@@ -6,3 +6,4 @@ out/
 Thumbs.db
 Start aria2 download.bat
 test_download/
+.dsh/tmp/
