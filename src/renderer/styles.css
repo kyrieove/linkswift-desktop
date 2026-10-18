@@ -30,3 +30,20 @@ html, body {
 ::selection{background:#bde4cf;color:#16452f}
 .dark ::selection{background:#2f4d3a;color:#e0e9e2}
 .dark ::-webkit-scrollbar-thumb{background:#3a4a41}
+/* ---- 状态、诊断、归档（spec 001） ---- */
+.status.partial{color:var(--red)}
+.diagnostic{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;margin-top:8px;padding:7px 10px;border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:5px;background:var(--amberbg);font-size:11px;color:var(--amber)}
+.diagnostic-step{font-weight:600}
+.diagnostic-selector{font-family:Consolas,"Cascadia Mono",monospace;word-break:break-all;opacity:.85;max-width:100%}
+.diagnostic-hint{color:var(--muted);flex-basis:100%;line-height:1.6}
+.stall-notice{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding:7px 10px;border:1px solid #eadfc5;border-radius:5px;background:var(--amberbg);font-size:11px;color:var(--amber)}
+.stall-notice svg{width:13px;height:13px}
+.filter-archive{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);padding:4px 8px;border-radius:5px}
+.filter-archive svg{width:13px;height:13px}
+.filter-archive:hover{background:var(--hover);color:var(--text)}
+.filter-archive.active{background:var(--mint);color:var(--green)}
+.provider-health{width:100%;border-collapse:collapse;font-size:11px;margin-top:18px}
+.provider-health th{text-align:left;color:var(--muted);font-weight:500;padding:8px 10px;border-bottom:1px solid var(--line)}
+.provider-health td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+.provider-health td:last-child{color:var(--muted)}
+.provider-health td.health-failed{color:var(--red)}

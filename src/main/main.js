@@ -9,6 +9,7 @@ const { UserscriptSource } = require('./userscript');
 const { JobManager } = require('./job');
 const { Aria2Daemon } = require('./aria2-daemon');
 const { TaskStore } = require('./task-store');
+const { ProviderHealthStore } = require('./provider-health');
 const { loadVendor } = require('./vendor');
 const { registerIpc } = require('./ipc');
 
@@ -122,7 +123,8 @@ async function main() {
     preloadPath: NETDISK_PRELOAD,
     emit: pushJob,
     daemon,
-    tasks: new TaskStore(userDataDir),
+    tasks: new TaskStore(userDataDir, { limit: settings.archiveLimit }),
+    health: new ProviderHealthStore(userDataDir),
   });
   jobs.register(ipcMain);
   registerIpc(ipcMain, jobs);

@@ -193,6 +193,7 @@ async function run(state) {
     const badLinkRes = await read(`window.linkswift.submit('not a valid share link').then((r) => JSON.stringify(r))`);
     const badLinkData = JSON.parse(badLinkRes);
     assert.strictEqual(badLinkData.ok, false, 'Invalid link must be rejected');
+    assert(Array.isArray(badLinkData.jobs) && badLinkData.jobs[0].error, 'Rejected input must say why, per entry');
     report.assertionsPassed++;
 
     // 5. Test real submit & push event rendering
@@ -200,7 +201,13 @@ async function run(state) {
     const goodLinkRes = await read(`window.linkswift.submit('https://pan.quark.cn/s/0123456789ab').then((r) => JSON.stringify(r))`);
     const goodLinkData = JSON.parse(goodLinkRes);
     assert.strictEqual(goodLinkData.ok, true, 'Valid link must be accepted');
-    createdJobId = goodLinkData.jobId;
+    createdJobId = goodLinkData.jobs[0].jobId;
+    assert(createdJobId, 'A valid link must come back with its own jobId');
+
+    // The same link pasted again is already being worked on: no second job.
+    const duplicateRes = await read(`window.linkswift.submit('https://pan.quark.cn/s/0123456789ab').then((r) => JSON.stringify(r))`);
+    const duplicateData = JSON.parse(duplicateRes);
+    assert.strictEqual(duplicateData.jobs[0].duplicateOf, createdJobId, 'An in-flight link must be de-duplicated');
     report.assertionsPassed++;
 
     await new Promise((resolve) => setTimeout(resolve, 1500));

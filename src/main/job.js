@@ -7,12 +7,36 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
 const { INTERNAL } = require('../shared/protocol');
-const { PROVIDERS, getProvider, parseShareLink } = require('../shared/providers');
+const { PROVIDERS, getProvider, parseShareLinks } = require('../shared/providers');
 const aria2 = require('./aria2');
 const { performChromeLogin } = require('./chrome-login');
 
 const DEBUG = process.env.LINKSWIFT_DEBUG === '1';
 if (DEBUG) console.log('[DBG] LINKSWIFT_DEBUG enabled');
+
+/** No bytes for this long, while still downloading, is a stall worth telling the user about. */
+const JOB_STALL_AFTER_MS = 60_000;
+
+/**
+ * The phases that count as "already working on this link". A finished job does
+ * not block the same link from being submitted again.
+ *
+ * @type {Set<import('../shared/protocol').JobPhase['phase']>}
+ */
+const ACTIVE_PHASES = new Set([
+  'loading',
+  'extracting',
+  'needs-human',
+  'linked',
+  'delivering',
+  'downloading',
+  'paused',
+]);
+
+/** @param {unknown} ids @returns {string[]} */
+function toIdList(ids) {
+  return Array.isArray(ids) ? ids.map((id) => String(id)).filter(Boolean) : [];
+}
 
 /**
  * The userscript gates its own setup on these two literals (source lines 220-221,
@@ -21,6 +45,31 @@ if (DEBUG) console.log('[DBG] LINKSWIFT_DEBUG enabled');
  */
 const INIT_CODE = '865746';
 const INIT_LICENSE = 'AGPL3';
+
+/**
+ * What the user can do about a failure, in one sentence. The failure code is the
+ * only thing that decides it, so the UI never has to read the message text.
+ *
+ * @type {Partial<Record<import('../shared/protocol').FailureCode, string>>}
+ */
+const FAILURE_HINTS = {
+  'upstream-redesigned': '页面结构变了：点重试会重新拉取最新脚本，再跑一遍。',
+  'unsupported-provider': '这个网盘目前不支持一键取链。',
+  'needs-transfer': '文件需要先转存到你自己的网盘，开启「允许自动转存」后重试。',
+  'link-expired': '直链已过期：点重试重新取一次链接。',
+  'aria2-down': '下载器没在运行：到设置里看一眼下载器状态，再点继续。',
+  'chrome-not-found': '找不到已登录的浏览器：先按提示登录一次。',
+  passcode: '提取码不对或缺失：把带 ?pwd= 的完整链接再粘一次。',
+  'passcode-wrong': '提取码不对：把带 ?pwd= 的完整链接再粘一次。',
+  'rate-limited': '被网盘限流了：等几分钟再重试。',
+  network: '网络没通：检查网络后重试。',
+  timeout: '等待超时：点重试再跑一次。',
+  'link-invalid': '分享链接本身失效了，换一条链接。',
+  'file-missing': '要下的文件已经不在这个分享里了。',
+  'no-files': '没能勾选到文件：点重试，或到窗口里手动勾一个。',
+  'extract-failed': '网盘接口这次没返回直链：点重试，或先打开窗口看看。',
+  delivery: '直链拿到了但没投递成功：检查下载器设置后重试。',
+};
 
 /**
  * The userscript reports its own failures as dialog text rather than exceptions,
@@ -461,6 +510,9 @@ class Job {
     this.aria2Config = null;
     this.readded = false;
     this.delivering = false;
+    /** Bytes seen at the last tick, and when they last grew; drives `stalled`. */
+    this.lastArrived = 0;
+    this.lastArrivedAt = Date.now();
   }
 
   stopPolling() {
@@ -477,6 +529,9 @@ class Job {
   /** @returns {import('../shared/protocol').Job} */
   snapshot() {
     const snapshot = { id: this.id, link: this.link, state: this.state, createdAt: this.createdAt };
+    if (this.stalled) snapshot.stalled = true;
+    if (this.scriptVersion) snapshot.scriptVersion = this.scriptVersion;
+    if (this.scriptOrigin) snapshot.scriptOrigin = this.scriptOrigin;
     return snapshot;
   }
 
@@ -506,6 +561,41 @@ class Job {
       code,
       message,
       detail,
+      ...(this.files.length ? { files: this.files } : {}),
+      ...(withProgress ? { progress: this.progress } : {}),
+    });
+    if (!DEBUG) this.close();
+  }
+
+  /**
+   * Fail with the driver's own report attached, so the UI can say which step of
+   * the page script broke instead of only "上游改版". The step is 1-based on
+   * screen: the driver counts from zero.
+   *
+   * @param {import('../shared/protocol').FailureCode} code
+   * @param {string} message
+   * @param {string} detail
+   * @param {{ step?: number, verb?: string, selector?: string }} report
+   */
+  failStep(code, message, detail, report) {
+    const hasStep = Number.isInteger(report?.step);
+    if (!hasStep) {
+      this.fail(code, message, detail);
+      return;
+    }
+    if (this.settled) return;
+    this.stopPolling();
+    this.settled = true;
+    const withProgress = this.progress.length > 0 && code !== 'cancelled';
+    this.setState({
+      phase: 'failed',
+      code,
+      message,
+      detail,
+      step: report.step,
+      verb: report.verb,
+      ...(report.selector ? { selector: report.selector } : {}),
+      hint: FAILURE_HINTS[code] ?? '页面没按预期走，点重试会重新拉取最新脚本再试。',
       ...(this.files.length ? { files: this.files } : {}),
       ...(withProgress ? { progress: this.progress } : {}),
     });
@@ -913,17 +1003,19 @@ class Job {
     // transcribed instead of measured.
     const definitive =
       outcome && ['link-invalid', 'file-missing', 'passcode-wrong'].includes(outcome.code);
+    const report = { step: observation.step, verb: observation.verb, selector: observation.selector };
     if (outcome && (!experimental || definitive)) {
-      this.fail(outcome.code, `${outcome.message}（${step}）`, detail);
+      this.failStep(outcome.code, `${outcome.message}（${step}）`, detail, report);
       return;
     }
     // The file list and the script's own buttons are on screen, so the page is
     // fine; it was the link fetch behind the dialog that came back empty.
     if (/下载助手|Aria2 下载|保存到网盘/.test(excerpt)) {
-      this.fail(
+      this.failStep(
         'extract-failed',
         `页面正常打开了，但脚本没弹出取链结果，通常是网盘接口临时拒绝；点「打开窗口」看看，或稍后重试（${step}）`,
         detail,
+        report,
       );
       return;
     }
@@ -937,7 +1029,7 @@ class Job {
       });
       return;
     }
-    this.fail('upstream-redesigned', `页面上没找到该点的东西，上游可能改版了（${step}）`, detail);
+    this.failStep('upstream-redesigned', `页面上没找到该点的东西，上游可能改版了（${step}）`, detail, report);
   }
 
   /**
@@ -1188,6 +1280,25 @@ class Job {
     this.progress = progress;
   }
 
+  /**
+   * The last real outcome for this netdisk, for the settings page. Only terminal
+   * phases say anything; a job still running has no verdict yet.
+   *
+   * @returns {{ provider: string, ok: boolean, code?: string, hint?: string } | null}
+   */
+  healthOutcome() {
+    const state = this.state;
+    if (state.phase === 'done') return { provider: this.link.provider, ok: true };
+    if (state.phase !== 'failed') return null;
+    if (state.code === 'cancelled') return null;
+    return {
+      provider: this.link.provider,
+      ok: false,
+      code: state.code,
+      hint: state.hint ?? state.message,
+    };
+  }
+
   /** aria2 may have lost the GID across its own restart; push the URI once more. */
   async readd() {
     if (this.readded || !this.aria2Config || !this.files.length) {
@@ -1281,6 +1392,16 @@ class Job {
         }
 
         const paused = this.progress.every((item) => item.status === 'paused');
+        // A queue that is merely waiting has no speed either, so stalling is
+        // judged on bytes actually arriving, not on the speed figure.
+        const arrived = this.progress.reduce((sum, item) => sum + item.completedLength, 0);
+        if (arrived !== this.lastArrived) {
+          this.lastArrived = arrived;
+          this.lastArrivedAt = Date.now();
+          this.stalled = false;
+        } else if (Date.now() - this.lastArrivedAt >= JOB_STALL_AFTER_MS) {
+          this.stalled = true;
+        }
         this.setState({
           phase: paused ? 'paused' : 'downloading',
           files: this.files,
@@ -1390,9 +1511,10 @@ class JobManager {
    *   emit: (job: import('../shared/protocol').Job) => void,
    *   daemon: import('./aria2-daemon').Aria2Daemon,
    *   tasks: import('./task-store').TaskStore,
+   *   health: import('./provider-health').ProviderHealthStore,
    * }} options
    */
-  constructor({ store, userscript, vendor, resources, partition, preloadPath, emit, daemon, tasks }) {
+  constructor({ store, userscript, vendor, resources, partition, preloadPath, emit, daemon, tasks, health }) {
     this.store = store;
     this.userscript = userscript;
     this.vendor = vendor;
@@ -1402,6 +1524,7 @@ class JobManager {
     this.emit = emit;
     this.daemon = daemon;
     this.tasks = tasks;
+    this.health = health;
 
     /** @type {Map<string, Job>} */
     this.jobs = new Map();
@@ -1473,25 +1596,91 @@ class JobManager {
   }
 
   /**
+   * One paste can carry several links, one of them bad, or one that is already
+   * being worked on. Each entry answers for itself so a bad link cannot hold the
+   * others back.
+   *
    * @param {string} raw
-   * @returns {{ ok: true, jobId: string } | { ok: false, message: string }}
+   * @returns {{ ok: boolean, jobs: Array<{ raw: string, jobId?: string, duplicateOf?: string, error?: string }> }}
    */
   submit(raw) {
-    const link = parseShareLink(raw);
-    if (!link) {
+    const text = String(raw ?? '');
+    const links = parseShareLinks(text);
+    if (!links.length) {
       const names = Object.values(PROVIDERS).map((provider) => provider.label).join('、');
-      return { ok: false, message: `看不懂这个链接。目前支持：${names}。` };
+      return {
+        ok: false,
+        jobs: [{ raw: text.trim().slice(0, 200), error: `看不懂这个链接。目前支持：${names}。` }],
+      };
     }
 
-    const job = this.buildJob({ link });
-    this.jobs.set(job.id, job);
-    this.emit(job.snapshot());
+    const results = [];
+    for (const link of links) {
+      const existing = this.findActive(link);
+      if (existing) {
+        results.push({ raw: link.raw, duplicateOf: existing.id });
+        continue;
+      }
+      const job = this.buildJob({ link });
+      this.jobs.set(job.id, job);
+      this.emit(job.snapshot());
 
-    const contentsId = job.prepare(this.partition, this.preloadPath);
-    if (contentsId >= 0) this.byContents.set(contentsId, job);
-    job.load();
+      const contentsId = job.prepare(this.partition, this.preloadPath);
+      if (contentsId >= 0) this.byContents.set(contentsId, job);
+      job.load();
+      results.push({ raw: link.raw, jobId: job.id });
+    }
+    return { ok: results.some((entry) => entry.jobId), jobs: results };
+  }
 
-    return { ok: true, jobId: job.id };
+  /**
+   * The job already working on this exact share, if any. A finished job does not
+   * count: the link may be worth downloading again, and its files are already on
+   * disk under their own names.
+   *
+   * @param {import('../shared/protocol').ShareLink} link
+   */
+  findActive(link) {
+    for (const job of this.jobs.values()) {
+      if (job.link?.provider !== link.provider || job.link?.shareId !== link.shareId) continue;
+      if (ACTIVE_PHASES.has(job.state.phase)) return job;
+    }
+    return null;
+  }
+
+  /** @param {string[]} ids */
+  archiveJobs(ids) {
+    const list = toIdList(ids);
+    const archived = this.tasks.archive(list);
+    for (const id of list) this.emitArchived(id);
+    return { ok: true, archived };
+  }
+
+  /** @param {string[]} ids */
+  unarchiveJobs(ids) {
+    const list = toIdList(ids);
+    const restored = this.tasks.unarchive(list);
+    for (const id of list) this.emitArchived(id);
+    return { ok: true, restored };
+  }
+
+  /** @param {string[]} ids */
+  purgeJobs(ids) {
+    const removed = this.tasks.removeMany(toIdList(ids));
+    return { ok: true, removed };
+  }
+
+  /** Push the settled job again so the renderer sees its new archive state. */
+  emitArchived(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    const record = this.tasks.all().find((entry) => entry.id === jobId);
+    this.emit({ ...job.snapshot(), archivedAt: record?.archivedAt });
+  }
+
+  /** @returns {ReturnType<import('./provider-health').ProviderHealthStore['view']>} */
+  providerHealth() {
+    return this.health.view(Object.keys(PROVIDERS));
   }
 
   /**
@@ -1515,6 +1704,8 @@ class JobManager {
 
   /** @param {Job} job */
   persist(job) {
+    const health = job.healthOutcome();
+    if (health) this.health.record({ ...health, at: Date.now() });
     if (job.state.phase === 'failed' && job.state.code === 'cancelled') {
       this.tasks.remove(job.id);
       return;
@@ -1527,6 +1718,7 @@ class JobManager {
       link: job.link,
       files,
       gids: job.gids,
+      ...(job.scriptVersion ? { scriptVersion: job.scriptVersion } : {}),
       state:
         job.state.phase === 'downloading' || job.state.phase === 'paused'
           ? { phase: 'downloading', files }
@@ -1536,9 +1728,14 @@ class JobManager {
 
   /** @returns {import('../shared/protocol').Job[]} */
   list() {
+    const archived = new Map(this.tasks.all().map((record) => [record.id, record.archivedAt]));
     return Array.from(this.jobs.values())
       .sort((left, right) => right.createdAt - left.createdAt)
-      .map((job) => job.snapshot());
+      .map((job) => {
+        const snapshot = job.snapshot();
+        if (archived.get(job.id)) snapshot.archivedAt = archived.get(job.id);
+        return snapshot;
+      });
   }
 
   /**

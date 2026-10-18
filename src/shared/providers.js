@@ -289,12 +289,30 @@ const PASSCODE_LABEL = /(?:提取码|密码|访问码|pwd|passcode)\s*[:：=]?\s
  * @returns {string | null}
  */
 function extractShareUrl(text) {
-  const start = text.search(/https?:\/\//i);
-  if (start < 0) return null;
+  const matches = extractShareUrls(text);
+  return matches.length ? matches[0] : null;
+}
 
-  let end = start;
-  while (end < text.length && URL_CHARS.test(text[end])) end += 1;
-  return text.slice(start, end).replace(TRAILING_PUNCTUATION, '');
+/**
+ * Every share URL in a paste, in the order they appear. One paste often carries
+ * several links, and each one has to keep the passcode written next to it.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractShareUrls(text) {
+  const urls = [];
+  const pattern = /https?:\/\//gi;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const start = match.index;
+    let end = start;
+    while (end < text.length && URL_CHARS.test(text[end])) end += 1;
+    const url = text.slice(start, end).replace(TRAILING_PUNCTUATION, '');
+    if (url) urls.push(url);
+    pattern.lastIndex = Math.max(end, start + 1);
+  }
+  return urls;
 }
 
 /**
@@ -308,7 +326,35 @@ function parseShareLink(raw) {
   const text = String(raw ?? '');
   const candidate = extractShareUrl(text);
   if (!candidate) return null;
+  return buildShareLink(candidate, text);
+}
 
+/**
+ * Every share link in one paste. Unparseable URLs are dropped: the caller reports
+ * them per entry, it does not get a half-filled object.
+ *
+ * @param {string} raw
+ * @returns {import('./protocol').ShareLink[]}
+ */
+function parseShareLinks(raw) {
+  const text = String(raw ?? '');
+  const links = [];
+  const seen = new Set();
+  for (const candidate of extractShareUrls(text)) {
+    const link = buildShareLink(candidate, text);
+    if (!link || seen.has(`${link.provider}:${link.shareId}`)) continue;
+    seen.add(`${link.provider}:${link.shareId}`);
+    links.push(link);
+  }
+  return links;
+}
+
+/**
+ * @param {string} candidate
+ * @param {string} text  The whole paste, for a passcode written next to the link
+ * @returns {import('./protocol').ShareLink | null}
+ */
+function buildShareLink(candidate, text) {
   let url;
   try {
     url = new URL(candidate);
@@ -343,4 +389,4 @@ function getProvider(id) {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, id) ? PROVIDERS[id] : null;
 }
 
-module.exports = { PROVIDERS, parseShareLink, getProvider };
+module.exports = { PROVIDERS, parseShareLink, parseShareLinks, getProvider };

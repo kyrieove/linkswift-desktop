@@ -128,12 +128,20 @@ async function main() {
     assert.strictEqual(job.state.code, 'link-invalid');
   }
 
-  // 6. 验证过的网盘：驱动点不到按钮就是真异常，要报「上游改版」
+  // 6. 验证过的网盘：驱动点不到按钮就是真异常，要报「上游改版」，并保留是哪一步
   {
     const { job } = makeJob();
-    job.handle({ kind: 'driver-result', mode: 'share', ok: false, step: 0, verb: 'wait-for', selector: '.x', detail: '超时' });
+    job.handle({ kind: 'driver-result', mode: 'share', ok: false, step: 2, verb: 'wait-for', selector: '.x-button-box', detail: '超时' });
     assert.strictEqual(job.state.phase, 'failed');
     assert.strictEqual(job.state.code, 'upstream-redesigned');
+    assert.strictEqual(job.state.step, 2, '失败的步骤序号要留在任务上');
+    assert.strictEqual(job.state.verb, 'wait-for', '失败的动词要留在任务上');
+    assert.strictEqual(job.state.selector, '.x-button-box', '失败的选择器要留在任务上');
+    assert(
+      typeof job.state.hint === 'string' && job.state.hint.includes('重试'),
+      `失败要带一句能执行的提示：${job.state.hint}`,
+    );
+    assert(job.state.message.includes('第 3 步'), '消息里要写清第几步');
   }
 
   // 7. 选择器只是照抄没跑过的网盘：留一个手动窗口，不判死
@@ -209,6 +217,51 @@ async function main() {
       `失败信息应数清完成与失败：${job.state.message}`,
     );
     assert.strictEqual(job.state.progress.filter((p) => p.status === 'complete').length, 1);
+    job.stopPolling();
+    aria2.findGid = realFindGid;
+  }
+
+  // 9. 60 秒没有字节增长就标停滞，字节一涨立刻清掉；不只是速度为零
+  {
+    const aria2 = require('../src/main/aria2');
+    const realFindGid = aria2.findGid;
+    let completed = '100';
+    aria2.findGid = async (_config, gid) => ({
+      gid,
+      status: 'active',
+      totalLength: '1000',
+      completedLength: completed,
+      downloadSpeed: '0',
+      connections: '1',
+    });
+
+    const { job } = makeJob();
+    job.files = [{ name: 'slow.bin', url: 'https://example.com/slow', headers: {} }];
+    job.gids = [{ file: job.files[0], gid: 'gid-slow' }];
+    job.progress = [
+      {
+        gid: 'gid-slow',
+        name: 'slow.bin',
+        status: 'waiting',
+        totalLength: 0,
+        completedLength: 0,
+        downloadSpeed: 0,
+        connections: 0,
+        errorCode: null,
+        errorMessage: null,
+      },
+    ];
+    job.aria2Config = { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' };
+    job.lastArrived = 100;
+    job.lastArrivedAt = Date.now() - 61_000;
+    job.startPolling();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.strictEqual(job.snapshot().stalled, true, '61 秒没有字节增长就该标停滞');
+    assert.strictEqual(job.state.phase, 'downloading', '停滞只是提示，不改状态');
+
+    completed = '200';
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.strictEqual(job.snapshot().stalled, undefined, '字节一涨就清掉停滞标记');
     job.stopPolling();
     aria2.findGid = realFindGid;
   }

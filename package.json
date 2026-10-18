@@ -20,6 +20,8 @@
     "check:share-link": "node tools/check-share-link.js",
     "check:job": "node tools/check-job.js",
     "check:lifecycle": "node tools/probe/check-aria2-lifecycle.js",
+    "check:archive": "node tools/check-archive.js",
+    "check:provider-health": "node tools/check-provider-health.js",
     "check:runner": "node tools/check-runner.js",
     "check:negative": "node tools/probe/neg-run-checks.js",
     "check:brand": "node tools/check-brand.js",

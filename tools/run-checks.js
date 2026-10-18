@@ -13,6 +13,8 @@ const SCRIPT_STEPS = [
   'check:job',
   'check:aria2',
   'check:lifecycle',
+  'check:archive',
+  'check:provider-health',
   'check:brand',
   'check:runner',
   'check:negative',

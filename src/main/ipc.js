@@ -38,6 +38,10 @@ function registerIpc(bus, manager) {
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   bus.handle(INVOKE.revealWindow, (_event, jobId) => manager.reveal(String(jobId)));
+  bus.handle(INVOKE.archiveJobs, (_event, ids) => manager.archiveJobs(ids));
+  bus.handle(INVOKE.unarchiveJobs, (_event, ids) => manager.unarchiveJobs(ids));
+  bus.handle(INVOKE.purgeJobs, (_event, ids) => manager.purgeJobs(ids));
+  bus.handle(INVOKE.providerHealth, () => manager.providerHealth());
   bus.handle(INVOKE.login, (_event, jobId) => manager.login(String(jobId)));
   bus.handle(INVOKE.continueAfterLogin, (_event, jobId) => manager.continueAfterLogin(String(jobId)));
   bus.handle(INVOKE.aria2Status, () => manager.aria2Status());

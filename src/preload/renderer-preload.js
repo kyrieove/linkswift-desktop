@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('linkswift', {
   restartAria2: () => ipcRenderer.invoke(INVOKE.restartAria2),
   openDownloadDir: () => ipcRenderer.invoke(INVOKE.openDownloadDir),
   chooseDirectory: () => ipcRenderer.invoke(INVOKE.chooseDirectory),
+  archiveJobs: (ids) => ipcRenderer.invoke(INVOKE.archiveJobs, ids),
+  unarchiveJobs: (ids) => ipcRenderer.invoke(INVOKE.unarchiveJobs, ids),
+  purgeJobs: (ids) => ipcRenderer.invoke(INVOKE.purgeJobs, ids),
+  providerHealth: () => ipcRenderer.invoke(INVOKE.providerHealth),
   onJobEvent: (handler) => {
     ipcRenderer.on(PUSH.jobEvent, (_event, job) => handler(job));
   },

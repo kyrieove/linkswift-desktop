@@ -105,6 +105,7 @@
     selectedIds: new Set(),
     detailId: null,
     detailTab: 'overview', // 'overview' | 'files' | 'logs'
+    archiveView: false, // footer toggle: show archived rows instead of the live list
     theme: localStorage.getItem('unidownload_theme') || 'light',
   };
 
@@ -116,13 +117,56 @@
   let submitting = false;
   let saving = false;
   let testing = false;
+  /** Set when the last submit came back with duplicates only, so the toast can say so. */
+  let providerHealth = [];
   let currentSettings = {
     delivery: 'aria2',
     aria2Mode: 'builtin',
     aria2: { domain: 'http://127.0.0.1', port: '6800', path: '/jsonrpc', token: '', dir: '' },
     allowTransfer: false,
     autoSubmit: false,
+    archiveLimit: 500,
   };
+
+  /* ---------------------------------------------------------------- Status vocabulary --- */
+
+  /**
+   * One row per state the user has to tell apart, so a label and its sentence can
+   * never drift apart. `tone` picks the colour token styles.css defines.
+   */
+  const STATUS_TEXT = {
+    downloading: { label: '下载中', tone: 'downloading' },
+    paused: { label: '已暂停', tone: 'idle' },
+    'needs-human': { label: '需你操作一步', tone: 'human' },
+    failed: { label: '已失败', tone: 'failed' },
+    done: { label: '已完成', tone: 'done' },
+    partial: { label: '部分完成', tone: 'failed' },
+    archived: { label: '已归档', tone: 'idle' },
+  };
+
+  /** A partial download is a `done` job whose per-file progress still holds an error. */
+  function isPartial(job) {
+    const state = (job && job.state) || {};
+    if (state.phase !== 'done' || !Array.isArray(state.progress)) return false;
+    return state.progress.some((item) => item.status === 'error');
+  }
+
+  function partialCounts(job) {
+    const progress = (job && job.state && job.state.progress) || [];
+    const failed = progress.filter((item) => item.status === 'error').length;
+    return { failed, completed: progress.length - failed, total: progress.length };
+  }
+
+  function statusKey(job) {
+    const phase = (job && job.state && job.state.phase) || 'loading';
+    if (phase === 'done') return isPartial(job) ? 'partial' : 'done';
+    if (!STATUS_TEXT[phase]) return 'paused';
+    return phase;
+  }
+
+  function isArchived(job) {
+    return Boolean(job && job.archivedAt);
+  }
 
   /* ---------------------------------------------------------------- DOM & Icons --- */
 
@@ -304,24 +348,19 @@
   }
 
   /** Map a job phase onto the colour token styles.css defines. */
-  function statusTone(phase) {
-    if (phase === 'needs-human') return 'human';
-    if (phase === 'failed') return 'failed';
-    if (phase === 'downloading' || phase === 'done') return phase;
-    return 'idle';
+  function statusTone(job) {
+    return STATUS_TEXT[statusKey(job)].tone;
   }
 
   function getJobStatusLabel(j) {
     const phase = j.state && j.state.phase;
-    if (phase === 'needs-human') return humanInfo(j).label;
-    if (phase === 'failed' && j.state && j.state.code === 'cancelled') return '已取消';
-    if (phase === 'downloading') {
-      const isWaiting = Array.isArray(j.state.progress) && j.state.progress.length > 0 && j.state.progress.every((p) => p.status === 'waiting');
-      if (isWaiting) return '等待中';
-      return '下载中';
+    if (phase === 'failed' && j.state.code === 'cancelled') return '已取消';
+    if (statusKey(j) === 'partial') {
+      const counts = partialCounts(j);
+      return `部分完成 ${counts.failed} 失败 / ${counts.completed} 完成`;
     }
-    if (phase === 'done') return doneLabel(j);
-    return (STATES[phase] && STATES[phase][0]) || phase || '未知状态';
+    if (phase === 'done' && !isPartial(j)) return doneLabel(j);
+    return STATUS_TEXT[statusKey(j)].label;
   }
 
   function getJobStatusIcon(j) {
@@ -338,17 +377,25 @@
     if (phase === 'extracting') return '正在驱动页面取直链…';
     if (phase === 'linked') return '直链已就绪';
     if (phase === 'delivering') return '正在推送到下载器…';
-    if (phase === 'needs-human') return humanInfo(j).text;
+    if (phase === 'needs-human') {
+      // The list itself has to say what to do, without opening the drawer.
+      return `${humanInfo(j).action}：${humanInfo(j).text}`;
+    }
     if (phase === 'paused') {
       const prog = aggregateProgress(state.progress);
       return prog.total > 0 ? `${formatBytes(prog.completed)} / ${formatBytes(prog.total)} · 已暂停` : '已暂停';
     }
     if (phase === 'downloading') {
+      if (j.stalled) return '可能已停滞：60 秒没有新数据';
       const prog = aggregateProgress(state.progress);
       if (prog.total > 0) return `${formatBytes(prog.completed)} / ${formatBytes(prog.total)}`;
       return '下载中…';
     }
     if (phase === 'done') {
+      if (isPartial(j)) {
+        const counts = partialCounts(j);
+        return `${counts.completed} 个完成 · ${counts.failed} 个失败`;
+      }
       const prog = aggregateProgress(state.progress);
       if (prog.total > 0) return formatBytes(prog.completed || prog.total);
       return doneDetail(j);
@@ -380,6 +427,8 @@
 
   function matchesFilter(j, filter) {
     const phase = j.state && j.state.phase;
+    // Archived rows only appear in the archive view; live rows never do.
+    if (isArchived(j) !== viewState.archiveView) return false;
     if (filter === 'all') return true;
     if (filter === 'active') return ['downloading', 'extracting', 'linked', 'loading', 'delivering'].includes(phase);
     if (filter === 'paused') return phase === 'paused';
@@ -439,10 +488,79 @@
     render();
   }
 
+  /* ---------------------------------------------------------------- Provider health --- */
+
+  /**
+   * What the settings page may claim about a netdisk: the capability grade (a
+   * fixed, verified conclusion) next to the last outcome that actually happened
+   * on this machine. A provider nothing has run on says 未验证, not a guess.
+   */
+  const PROVIDER_CAPABILITY = {
+    quark: { grade: '一键取链', note: '已验证' },
+    baidu: { grade: '一键取链 · 大文件需转存', note: '已验证' },
+    uc: { grade: '一键取链', note: '已验证' },
+    xunlei: { grade: '仅转存 · 需手动推送', note: '实验性' },
+  };
+
+  function formatHealthTime(at) {
+    if (!at) return '';
+    const date = new Date(at);
+    const sameDay = new Date().toDateString() === date.toDateString();
+    return sameDay ? date.toLocaleTimeString() : date.toLocaleString();
+  }
+
+  function renderProviderHealth() {
+    const body = $('#provider-health-body');
+    if (!body) return;
+    body.replaceChildren();
+    for (const provider of ['quark', 'baidu', 'uc', 'xunlei']) {
+      const entry = providerHealth.find((item) => item.provider === provider);
+      const capability = PROVIDER_CAPABILITY[provider] || { grade: '未记录', note: '' };
+      const row = el('tr');
+      row.dataset.provider = provider;
+      row.append(
+        el('td', '', (PROVIDER_LABELS[provider] || provider) + (capability.note ? `（${capability.note}）` : '')),
+        el('td', '', capability.grade),
+      );
+      let statusText = '未验证';
+      if (entry && entry.verified) {
+        const when = formatHealthTime(entry.at);
+        statusText = entry.ok ? `成功 · ${when}` : `失败（${FAILURE_LABELS[entry.code] || entry.code || '未知'}）· ${when}`;
+      }
+      const statusCell = el('td', entry && entry.verified && !entry.ok ? 'health-failed' : '');
+      statusCell.textContent = statusText;
+      if (entry && entry.hint) statusCell.title = entry.hint;
+      row.append(statusCell);
+      body.append(row);
+    }
+  }
+
+  async function loadProviderHealth() {
+    try {
+      const entries = await api.providerHealth();
+      providerHealth = Array.isArray(entries) ? entries : [];
+    } catch {
+      providerHealth = [];
+    }
+    renderProviderHealth();
+  }
+
+  /** How many records have been archived to disk, for the settings note. */
+  async function refreshArchiveCount() {
+    try {
+      const archived = Array.from(jobs.values()).filter((j) => isArchived(j)).length;
+      if ($('#archive-count')) $('#archive-count').textContent = String(archived);
+    } catch {
+      // The count is a hint, never a reason to fail the page.
+    }
+  }
+
   /* ---------------------------------------------------------------- Rendering --- */
 
   function renderFilters() {
     const allJobs = Array.from(jobs.values());
+    // Filter counts describe the list the user is looking at: live or archived.
+    const counted = allJobs.filter((j) => isArchived(j) === viewState.archiveView);
     for (const container of [$('#filters'), $('#mobile-filters')]) {
       if (!container) continue;
       container.replaceChildren();
@@ -457,7 +575,7 @@
         if (container.id === 'filters') b.append(icon(ico));
         b.append(document.createTextNode(label));
         if (container.id === 'filters') {
-          const count = allJobs.filter((j) => matchesFilter(j, key)).length;
+          const count = counted.filter((j) => matchesFilter(j, key)).length;
           b.append(el('span', 'counter', String(count)));
         }
         b.onclick = () => setPhaseFilter(key);
@@ -475,8 +593,41 @@
     for (const p of ['quark', 'baidu', 'uc', 'xunlei']) {
       const countNode = $('#' + p + '-count');
       if (countNode) {
-        countNode.textContent = String(allJobs.filter((j) => j.link && j.link.provider === p).length);
+        countNode.textContent = String(counted.filter((j) => j.link && j.link.provider === p).length);
       }
+    }
+
+    const archiveToggle = $('#archive-toggle');
+    if (archiveToggle) {
+      archiveToggle.setAttribute('aria-pressed', String(viewState.archiveView));
+      archiveToggle.classList.toggle('active', viewState.archiveView);
+    }
+    if ($('#archive-toggle-label')) {
+      const archivedCount = allJobs.filter((j) => isArchived(j)).length;
+      $('#archive-toggle-label').textContent = archivedCount ? `归档 ${archivedCount}` : '归档';
+    }
+  }
+
+  /** Archive or purge whatever is selected, then drop the selection. */
+  async function runBatch(action, onlyIds) {
+    const ids = Array.isArray(onlyIds) ? onlyIds : Array.from(viewState.selectedIds);
+    if (!ids.length) return;
+    try {
+      if (action === 'archive') {
+        const res = await api.archiveJobs(ids);
+        notify(res && res.archived ? `已归档 ${res.archived} 个任务` : '勾选的任务里没有可归档的');
+      } else if (action === 'unarchive') {
+        const res = await api.unarchiveJobs(ids);
+        notify(res && res.restored ? `已恢复 ${res.restored} 个任务` : '勾选的任务里没有可恢复的');
+      } else if (action === 'purge') {
+        const res = await api.purgeJobs(ids);
+        notify(res && res.removed ? `已删除 ${res.removed} 个任务记录` : '勾选的任务里没有可删除的');
+      }
+      viewState.selectedIds.clear();
+      await refreshJobs();
+      render();
+    } catch (err) {
+      notify('操作失败：' + describeError(err));
     }
   }
 
@@ -498,6 +649,7 @@
       provider: viewState.providerFilter,
       query: viewState.query,
       sort: viewState.sort,
+      archive: viewState.archiveView,
     });
     const listChanged = listKey !== lastListKey;
     lastListKey = listKey;
@@ -513,6 +665,8 @@
       const row = el('article', 'taskrow' + (isSelected ? ' selected' : ''));
       row.dataset.jobId = String(j.id);
       row.dataset.state = phase;
+      // What the user has to tell apart; `data-state` stays the raw phase.
+      row.dataset.phase = statusKey(j);
       row.tabIndex = 0;
       row.setAttribute('aria-label', `${name}，${getJobStatusLabel(j)}，查看详情`);
 
@@ -546,7 +700,7 @@
 
       // The stylesheet colours the row by a short token, not by the raw phase
       // name (`needs-human` would need an escaped class and never matched).
-      const status = el('span', 'status ' + statusTone(phase));
+      const status = el('span', 'status ' + statusTone(j));
       status.append(icon(getJobStatusIcon(j)), document.createTextNode(getJobStatusLabel(j)));
       const statusSvg = status.querySelector('svg');
       if (statusSvg) statusSvg.style.cssText = 'width:11px;height:11px';
@@ -587,6 +741,30 @@
       meta.append(source, metrics);
       main.append(meta);
 
+      // A stall is a flag, not a phase: the download is still running, it just
+      // stopped moving, and the user decides whether waiting is still worth it.
+      if (j.stalled) {
+        const stall = el('div', 'stall-notice');
+        stall.append(
+          icon('alert'),
+          document.createTextNode('可能已停滞：60 秒没有新数据'),
+          btn('重试 ' + name, 'refresh', (e) => { e.stopPropagation(); actJob(j.id, 'retry'); }, 'button secondary small'),
+        );
+        main.append(stall);
+      }
+
+      // Why it failed, on the row: the step number is the one thing that says
+      // whether this was a page change or a bad link.
+      if (phase === 'failed' && state.code !== 'cancelled' && (state.step !== undefined || state.hint)) {
+        const diagnostic = el('div', 'diagnostic');
+        if (state.step !== undefined) {
+          diagnostic.append(el('span', 'diagnostic-step', `第 ${state.step + 1} 步：${state.verb || '?'}`));
+        }
+        if (state.selector) diagnostic.append(el('span', 'diagnostic-selector', String(state.selector)));
+        if (state.hint) diagnostic.append(el('span', 'diagnostic-hint', state.hint));
+        main.append(diagnostic);
+      }
+
       // Actions Column
       const actions = el('div', 'rowactions');
       if (phase === 'downloading') {
@@ -612,15 +790,22 @@
     if (!filtered.length) {
       const filtering = Boolean(viewState.query) || viewState.providerFilter !== null || viewState.phaseFilter !== 'all';
       const emptyDiv = el('div', 'empty');
+      // An empty archive is not "no tasks yet", and an empty filter is not an
+      // empty list. Each one gets its own words and its own way out.
+      const heading = viewState.archiveView
+        ? filtering ? '归档里没有符合筛选的任务' : '归档里还没有任务'
+        : filtering ? '这个筛选下没有任务' : '这里还没有任务';
       emptyDiv.append(
         icon('search'),
-        el('h3', '', filtering ? '这个筛选下没有任务' : '这里还没有任务'),
+        el('h3', '', heading),
         el(
           'p',
           '',
           filtering
             ? '换一个状态或网盘来源，或者清空筛选。'
-            : '添加一个分享链接，开始你的第一个下载。'
+            : viewState.archiveView
+              ? '把已完成的任务归档，它们会从这里消失，需要时再恢复。'
+              : '添加一个分享链接，开始你的第一个下载。'
         )
       );
       if (filtering) {
@@ -633,6 +818,13 @@
             render();
           }, 'button secondary')
         );
+      } else if (viewState.archiveView) {
+        emptyDiv.append(
+          btn('回到任务列表', null, () => {
+            viewState.archiveView = false;
+            render();
+          }, 'button secondary')
+        );
       } else {
         emptyDiv.append(btn('新建任务', null, openCreate, 'button secondary'));
       }
@@ -641,8 +833,10 @@
 
     // Selection bar & summary
     const count = viewState.selectedIds.size;
-    if ($('#selection-label')) $('#selection-label').textContent = count ? '已选择 ' + count + ' 个任务' : '文件 / 任务';
+    if ($('#selection-label')) $('#selection-label').textContent = count ? '已选择 ' + count + ' 个任务' : viewState.archiveView ? '归档任务' : '文件 / 任务';
     if ($('#selection-actions')) $('#selection-actions').hidden = !count;
+    if ($('#selected-archive')) $('#selected-archive').textContent = viewState.archiveView ? '恢复' : '归档';
+    if ($('#selected-purge')) $('#selected-purge').hidden = false;
     if ($('#visible-count')) $('#visible-count').hidden = !!count;
     if ($('#jobs-count')) $('#jobs-count').textContent = filtered.length + ' 个任务';
     if ($('#select-all')) {
@@ -739,10 +933,15 @@
       '网盘: ' + (link.provider || '?') + ' / ' + (link.shareId || '?'),
       '提取码: ' + (link.passcode || '无'),
       '阶段: ' + (state.phase || '?'),
+      state.step !== undefined ? `失败步骤: 第 ${state.step + 1} 步（${state.verb || '?'}）` : null,
+      state.selector ? '目标: ' + state.selector : null,
+      '脚本版本: ' + (job.scriptVersion || '未记录') + (job.scriptOrigin ? '（' + job.scriptOrigin + '）' : ''),
       '错误: ' + (state.code || '无') + ' ' + (state.message || ''),
       '',
       String(state.detail || '（没有技术细节）'),
-    ].join('\n');
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
   }
 
   function renderDetails() {
@@ -811,12 +1010,37 @@
       }
 
       if (phase === 'failed') {
-        const note = el('div', 'detailnote', state.message || '任务失败。');
+        const note = el('div', 'detailnote');
+        // Which step broke is the difference between "the page changed" and
+        // "this link is bad", so it leads the failure block.
+        if (state.step !== undefined) {
+          const diagnostic = el('div', 'diagnostic');
+          diagnostic.append(el('span', 'diagnostic-step', `第 ${state.step + 1} 步：${state.verb || '?'}`));
+          if (state.selector) diagnostic.append(el('span', 'diagnostic-selector', String(state.selector)));
+          note.append(diagnostic);
+        }
+        if (state.hint) {
+          const hint = el('p', 'diagnostic-hint', state.hint);
+          hint.style.marginTop = '8px';
+          note.append(hint);
+        }
+        note.append(el('p', '', state.message || '任务失败。'));
+        if (job.scriptVersion) {
+          note.append(
+            el('p', 'help', `本次使用脚本 ${job.scriptVersion}${job.scriptOrigin ? '（' + job.scriptOrigin + '）' : ''}`),
+          );
+        }
         if (state.code) {
           const p = el('p', 'help', '错误代码：' + (FAILURE_LABELS[state.code] || state.code) + ' (' + state.code + ')');
           note.append(p);
         }
         drawer.append(note);
+      }
+
+      if (j.stalled) {
+        const stall = el('div', 'stall-notice');
+        stall.append(icon('alert'), document.createTextNode('可能已停滞：60 秒没有新数据。要不要继续等由你决定。'));
+        drawer.append(stall);
       }
 
       const tools = el('div', 'drawertools');
@@ -826,6 +1050,10 @@
         tools.append(btn('继续下载', 'play', () => actJob(j.id, 'resume'), 'button secondary small'));
       } else if (phase === 'failed') {
         tools.append(btn('重新获取直链', 'refresh', () => actJob(j.id, 'retry'), 'button secondary small'));
+        tools.append(btn('复制诊断', 'copy', async () => {
+          const ok = await writeClipboard(diagnosisText(j));
+          notify(ok ? '诊断信息已复制' : '复制失败');
+        }, 'button secondary small'));
       } else if (phase === 'needs-human') {
         tools.append(btn(humanInfo(j).action, 'open', () => actJob(j.id, 'human'), 'button secondary small'));
         if (humanInfo(j).label === '需先转存') {
@@ -836,6 +1064,15 @@
             const transferInput = $('#allow-transfer');
             if (transferInput) transferInput.focus();
           }, 'button primary small'));
+        }
+      }
+
+      // Archiving is the user's own call, and only settled jobs can take it.
+      if (['done', 'failed'].includes(phase)) {
+        if (isArchived(j)) {
+          tools.append(btn('从归档恢复', 'folder', () => runBatch('unarchive', [j.id]), 'button secondary small'));
+        } else {
+          tools.append(btn('归档', 'folder', () => runBatch('archive', [j.id]), 'button secondary small'));
         }
       }
 
@@ -997,7 +1234,11 @@
       if ($('#page-subtitle')) $('#page-subtitle').textContent = copy[next][1];
     }
     if (next === 'tasks') render();
-    if (next === 'settings') syncSettingsUi();
+    if (next === 'settings') {
+      syncSettingsUi();
+      loadProviderHealth();
+      refreshArchiveCount();
+    }
   }
 
   function applyTheme(mode) {
@@ -1197,19 +1438,32 @@
         currentSettings = await api.setSettings(Object.assign({}, currentSettings, { delivery: picked }));
       }
       const result = await api.submit(text);
-      if (result && result.ok) {
+      // One paste can be several links; each one answers for itself so a bad
+      // entry cannot block the others.
+      const entries = (result && Array.isArray(result.jobs)) ? result.jobs : [];
+      const created = entries.filter((entry) => entry.jobId).length;
+      const duplicates = entries.filter((entry) => entry.duplicateOf).length;
+      const rejected = entries.filter((entry) => entry.error);
+      if (created || duplicates) {
         const input = $('#link-input') || $('#share');
         if (input) input.value = '';
         const dialog = $('#create-dialog');
         if (dialog) dialog.close();
-        notify('任务已提交，开始解析');
-      } else {
+        const parts = [];
+        if (created) parts.push(`新建 ${created} 个任务`);
+        if (duplicates) parts.push(`${duplicates} 条已在处理中`);
+        notify(parts.join('，') + (rejected.length ? `，${rejected.length} 条没认出来` : ''));
+      }
+      if (rejected.length && !created) {
+        const message = rejected[0].error || '提交失败。';
         if (errNode) {
-          errNode.textContent = (result && result.message) || '提交失败。';
+          errNode.textContent = message;
           errNode.hidden = false;
         } else {
-          notify((result && result.message) || '提交失败。');
+          notify(message);
         }
+      } else if (rejected.length) {
+        notify(`${rejected.length} 条没认出来：${rejected[0].error || ''}`);
       }
     } catch (err) {
       if (errNode) {
@@ -1363,6 +1617,12 @@
   }
 
   async function loadExistingJobs() {
+    await refreshJobs();
+    render();
+  }
+
+  /** Re-read the whole list, so an archive flag set by the host lands here too. */
+  async function refreshJobs() {
     try {
       const existing = await api.listJobs();
       if (Array.isArray(existing)) {
@@ -1375,7 +1635,6 @@
     } catch {
       // ignore
     }
-    render();
   }
 
   /* ---------------------------------------------------------------- Wiring & Listeners --- */
@@ -1418,6 +1677,26 @@
 
     const selCancel = $('#selected-cancel');
     if (selCancel) selCancel.addEventListener('click', () => batchSelected('cancel'));
+
+    const selArchive = $('#selected-archive');
+    if (selArchive) {
+      selArchive.addEventListener('click', () => runBatch(viewState.archiveView ? 'unarchive' : 'archive'));
+    }
+
+    const selPurge = $('#selected-purge');
+    if (selPurge) selPurge.addEventListener('click', () => runBatch('purge'));
+
+    const archiveToggle = $('#archive-toggle');
+    if (archiveToggle) {
+      archiveToggle.addEventListener('click', () => {
+        viewState.archiveView = !viewState.archiveView;
+        viewState.selectedIds.clear();
+        viewState.detailId = null;
+        const drawer = $('#drawer');
+        if (drawer) drawer.hidden = true;
+        render();
+      });
+    }
 
     const selectAllCheck = $('#select-all');
     if (selectAllCheck) {
@@ -1504,6 +1783,10 @@
       b.onclick = () => {
         $$('[data-settingtab]').forEach((x) => x.classList.toggle('active', x === b));
         $$('[data-settings]').forEach((s) => (s.hidden = s.dataset.settings !== b.dataset.settingtab));
+        if (b.dataset.settingtab === 'providers') {
+          loadProviderHealth();
+          refreshArchiveCount();
+        }
       };
     });
 
@@ -1594,8 +1877,31 @@
       });
     }
 
-    const browseDirBtn = $('#browse-dir');
-    if (browseDirBtn) {
+    // Clearing the archive list only forgets records; downloaded files stay.
+    const clearArchiveBtn = $('#clear-archive');
+    if (clearArchiveBtn) {
+      clearArchiveBtn.addEventListener('click', async () => {
+        const ids = Array.from(jobs.values()).filter((j) => isArchived(j)).map((j) => j.id);
+        const status = $('#archive-status');
+        try {
+          const res = ids.length ? await api.purgeJobs(ids) : { removed: 0 };
+          if (status) {
+            status.hidden = false;
+            status.textContent = `已清空 ${res.removed || 0} 条归档记录`;
+          }
+          await refreshJobs();
+          refreshArchiveCount();
+          render();
+        } catch (err) {
+          if (status) {
+            status.hidden = false;
+            status.textContent = '清空失败：' + describeError(err);
+          }
+        }
+      });
+    }
+
+    const browseDirBtn = $('#browse-dir');    if (browseDirBtn) {
       browseDirBtn.addEventListener('click', async () => {
         try {
           const selected = await api.chooseDirectory();

@@ -29,7 +29,22 @@ const DEFAULT_SETTINGS = {
   },
   allowTransfer: false,
   autoSubmit: false,
+  // How many jobs the main list keeps; older ones move to jobs-archive.jsonl.
+  archiveLimit: 500,
 };
+
+/** Bounds for `archiveLimit`, so a hand-edited settings file cannot freeze the list. */
+const ARCHIVE_LIMIT_MIN = 100;
+const ARCHIVE_LIMIT_MAX = 2000;
+
+/** @param {unknown} value */
+function clampArchiveLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < ARCHIVE_LIMIT_MIN || number > ARCHIVE_LIMIT_MAX) {
+    return DEFAULT_SETTINGS.archiveLimit;
+  }
+  return Math.floor(number);
+}
 
 /**
  * @param {string} file
@@ -76,6 +91,7 @@ class Store {
 
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.settingsFile, {}) };
     this.settings.aria2 = { ...DEFAULT_SETTINGS.aria2, ...this.settings.aria2 };
+    this.settings.archiveLimit = clampArchiveLimit(this.settings.archiveLimit);
 
     /** @type {Record<string, unknown>} */
     this.values = readJson(this.valuesFile, {});
@@ -95,6 +111,7 @@ class Store {
       ...this.settings,
       ...patch,
       aria2: { ...this.settings.aria2, ...(patch.aria2 ?? {}) },
+      archiveLimit: clampArchiveLimit(patch.archiveLimit ?? this.settings.archiveLimit),
     };
     writeJson(this.settingsFile, this.settings);
     return this.getSettings();

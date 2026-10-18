@@ -32,6 +32,7 @@
  * @property {'builtin' | 'external'} aria2Mode  builtin runs the bundled aria2
  * @property {boolean} allowTransfer  Lets the baidu flow write into the user's drive
  * @property {boolean} autoSubmit     提交前不再等一次点击：粘贴到分享文案就开跑
+ * @property {number} archiveLimit    How many jobs the main list keeps; older ones are archived
  */
 
 /**
@@ -78,7 +79,25 @@
  *   | { phase: 'downloading', files: ExtractedFile[], progress: DownloadProgress[] }
  *   | { phase: 'paused', files: ExtractedFile[], progress: DownloadProgress[] }
  *   | { phase: 'done', files: ExtractedFile[], progress?: DownloadProgress[] }
- *   | { phase: 'failed', code: FailureCode, message: string, detail?: string, files?: ExtractedFile[], progress?: DownloadProgress[] }} JobPhase
+ *   | { phase: 'failed', code: FailureCode, message: string, detail?: string, files?: ExtractedFile[], progress?: DownloadProgress[],
+ *       step?: number, verb?: string, selector?: string, hint?: string }} JobPhase
+ *
+ * `step`, `verb` and `selector` are the driver's own failure report, kept so the
+ * UI can say which step of the page script broke instead of only "上游改版".
+ * `hint` is the one Chinese sentence built from them.
+ */
+
+/**
+ * The outcome of one real job for one netdisk, as the settings page shows it.
+ * Only what actually happened on this machine: never a guess at what the
+ * provider might support.
+ *
+ * @typedef {object} ProviderHealth
+ * @property {ProviderId} provider
+ * @property {number} at        When it happened
+ * @property {boolean} ok       Whether a link was extracted and delivered
+ * @property {FailureCode} [code]  Present only when ok is false
+ * @property {string} [hint]    One sentence, present only when ok is false
  */
 
 /**
@@ -88,6 +107,10 @@
  * @property {JobPhase} state
  * @property {number} createdAt
  * @property {boolean} [restored]  Rebuilt from disk after a restart
+ * @property {boolean} [stalled]   Downloading with no byte growth for 60s
+ * @property {string} [scriptVersion]  Userscript version this job ran on
+ * @property {'upstream' | 'cache' | 'bundled'} [scriptOrigin]  Where it came from
+ * @property {number} [archivedAt]  User archived it; it left the main list
  */
 
 /**
@@ -110,6 +133,10 @@ const INVOKE = {
   restartAria2: 'linkswift:aria2:restart',
   openDownloadDir: 'linkswift:downloads:open',
   chooseDirectory: 'linkswift:directory:choose',
+  archiveJobs: 'linkswift:jobs:archive',
+  unarchiveJobs: 'linkswift:jobs:unarchive',
+  purgeJobs: 'linkswift:jobs:purge',
+  providerHealth: 'linkswift:provider:health',
 };
 
 /**

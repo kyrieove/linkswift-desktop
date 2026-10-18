@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { parseShareLink } = require('../src/shared/providers');
+const { parseShareLink, parseShareLinks } = require('../src/shared/providers');
 
 // 1. 百度分享文案原样粘贴（用户报告的那段），提取码在句尾
 {
@@ -93,6 +93,76 @@ const { parseShareLink } = require('../src/shared/providers');
   );
   assert.strictEqual(patchSource(once), once, '补过一次之后不应再补');
   assert.strictEqual(patchSource('no anchor here'), 'no anchor here', '没有锚点时原样返回');
+}
+
+// 10. 一次粘贴里有多条链接：三条都切出来，每条带自己的提取码，重复的只留一条
+{
+  const text = [
+    '一次给你三条：',
+    '夸克 https://pan.quark.cn/s/aaaaaaaaaaaa 提取码：aaaa',
+    '百度 https://pan.baidu.com/s/1LBO1Kp3yHPYVFxukMC7YFQ?pwd=8k2m',
+    'UC https://drive.uc.cn/s/9f8e7d6c5b4a3f2e1d0c?public=1',
+    '重复的又贴了一次 https://pan.quark.cn/s/aaaaaaaaaaaa',
+  ].join('\n');
+
+  const links = parseShareLinks(text);
+  assert.strictEqual(links.length, 3, `三条链接应各切出一条，实际 ${links.length}`);
+  assert.deepStrictEqual(links.map((link) => link.provider), ['quark', 'baidu', 'uc']);
+  assert.strictEqual(links[0].passcode, 'aaaa', '提取码跟在谁后面就属于谁');
+  assert.strictEqual(links[1].passcode, '8k2m');
+
+  // A paste with one unsupported link still returns the supported ones.
+  const mixed = parseShareLinks('https://example.com/s/1abc 和 https://pan.quark.cn/s/32a5d87a6d67');
+  assert.deepStrictEqual(mixed.map((link) => link.provider), ['quark']);
+  assert.deepStrictEqual(parseShareLinks('一个字都没有'), []);
+}
+
+// 11. 处理中的同一链接去重，已完成的不挡路
+{
+  const { JobManager } = require('../src/main/job');
+  const manager = new JobManager({
+    store: { getSettings: () => ({ allowTransfer: false }) },
+    userscript: {},
+    vendor: {},
+    resources: {},
+    partition: 'test',
+    preloadPath: 'x',
+    emit: () => {},
+    daemon: {},
+    tasks: { save: () => {}, remove: () => {}, all: () => [], archive: () => 0, unarchive: () => 0, removeMany: () => 0 },
+    health: { record: () => {} },
+  });
+  // Building a real job opens a window; this case is about the de-duplication rule.
+  manager.buildJob = ({ link }) => ({
+    id: `job-${link.shareId}`,
+    link,
+    createdAt: Date.now(),
+    state: { phase: 'extracting' },
+    prepare: () => -1,
+    load: () => {},
+    snapshot() {
+      return { id: this.id, link: this.link, state: this.state, createdAt: this.createdAt };
+    },
+  });
+
+  const url = 'https://pan.quark.cn/s/32a5d87a6d67';
+  const first = manager.submit(url);
+  assert.strictEqual(first.jobs.length, 1);
+  assert(first.jobs[0].jobId, '第一条应建成任务');
+
+  const second = manager.submit(url);
+  assert.strictEqual(second.jobs[0].duplicateOf, first.jobs[0].jobId, '处理中的同一链接应判重');
+  assert.strictEqual(second.ok, false, '全是重复时不算新建成功');
+
+  // Once it is done, the same link is allowed again: the direct link may be stale.
+  manager.jobs.get(first.jobs[0].jobId).state = { phase: 'done', files: [] };
+  const third = manager.submit(url);
+  assert(third.jobs[0].jobId, '已完成的任务不该挡住重新提交');
+  assert.notStrictEqual(third.jobs[0].jobId, undefined);
+
+  const bad = manager.submit('不是链接');
+  assert.strictEqual(bad.ok, false);
+  assert(bad.jobs[0].error.includes('看不懂'), '无法识别的输入要单独说明');
 }
 
 console.log('check:share-link OK');
