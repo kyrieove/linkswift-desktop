@@ -159,7 +159,10 @@
 
   function statusKey(job) {
     const phase = (job && job.state && job.state.phase) || 'loading';
-    if (phase === 'done') return isPartial(job) ? 'partial' : 'done';
+    // Two of the five states are not one-to-one with a phase: an archived job has
+    // left the list the user asked to see, and a done job with a failed file is
+    // only partly done.
+    if (phase === 'done') return isArchived(job) ? 'archived' : isPartial(job) ? 'partial' : 'done';
     if (!STATUS_TEXT[phase]) return 'paused';
     return phase;
   }
@@ -679,7 +682,7 @@
       };
 
       // Selection Checkbox
-      const check = el('input', 'rowcheck');
+      const check = el('input', 'rowcheck job-select');
       check.type = 'checkbox';
       check.checked = isSelected;
       check.setAttribute('aria-label', '选择 ' + name);
@@ -754,7 +757,8 @@
       }
 
       // Why it failed, on the row: the step number is the one thing that says
-      // whether this was a page change or a bad link.
+      // whether this was a page change or a bad link, and the same block carries
+      // the two buttons that fix it without opening the drawer.
       if (phase === 'failed' && state.code !== 'cancelled' && (state.step !== undefined || state.hint)) {
         const diagnostic = el('div', 'diagnostic');
         if (state.step !== undefined) {
@@ -762,6 +766,16 @@
         }
         if (state.selector) diagnostic.append(el('span', 'diagnostic-selector', String(state.selector)));
         if (state.hint) diagnostic.append(el('span', 'diagnostic-hint', state.hint));
+        // The buttons live inside a clickable row, so their own click must not
+        // also open the detail panel.
+        const still = (handler) => (e) => { e.stopPropagation(); handler(); };
+        diagnostic.append(
+          btn('复制诊断 ' + name, 'copy', still(async () => {
+            const ok = await writeClipboard(diagnosisText(j));
+            notify(ok ? '诊断信息已复制' : '复制失败');
+          }), 'button quiet small'),
+          btn('重试 ' + name, 'refresh', still(() => actJob(j.id, 'retry')), 'button quiet small'),
+        );
         main.append(diagnostic);
       }
 
@@ -794,7 +808,7 @@
       // empty list. Each one gets its own words and its own way out.
       const heading = viewState.archiveView
         ? filtering ? '归档里没有符合筛选的任务' : '归档里还没有任务'
-        : filtering ? '这个筛选下没有任务' : '这里还没有任务';
+        : filtering ? '筛选为空' : '这里还没有任务';
       emptyDiv.append(
         icon('search'),
         el('h3', '', heading),
@@ -834,7 +848,18 @@
     // Selection bar & summary
     const count = viewState.selectedIds.size;
     if ($('#selection-label')) $('#selection-label').textContent = count ? '已选择 ' + count + ' 个任务' : viewState.archiveView ? '归档任务' : '文件 / 任务';
-    if ($('#selection-actions')) $('#selection-actions').hidden = !count;
+    const selectionActions = $('#selection-actions');
+    if (selectionActions) {
+      selectionActions.hidden = !count;
+      selectionActions.classList.add('bulk-bar');
+      // The list head only has room for the two actions the view is about: in
+      // the main list that is archiving and deleting, in the archive it is
+      // restoring and deleting.
+      if ($('#selected-archive')) $('#selected-archive').hidden = false;
+      if ($('#selected-pause')) $('#selected-pause').hidden = viewState.archiveView;
+      if ($('#selected-resume')) $('#selected-resume').hidden = viewState.archiveView;
+      if ($('#selected-cancel')) $('#selected-cancel').hidden = viewState.archiveView;
+    }
     if ($('#selected-archive')) $('#selected-archive').textContent = viewState.archiveView ? '恢复' : '归档';
     if ($('#selected-purge')) $('#selected-purge').hidden = false;
     if ($('#visible-count')) $('#visible-count').hidden = !!count;
@@ -1025,9 +1050,9 @@
           note.append(hint);
         }
         note.append(el('p', '', state.message || '任务失败。'));
-        if (job.scriptVersion) {
+        if (j.scriptVersion) {
           note.append(
-            el('p', 'help', `本次使用脚本 ${job.scriptVersion}${job.scriptOrigin ? '（' + job.scriptOrigin + '）' : ''}`),
+            el('p', 'help', `本次使用脚本 ${j.scriptVersion}${j.scriptOrigin ? '（' + j.scriptOrigin + '）' : ''}`),
           );
         }
         if (state.code) {

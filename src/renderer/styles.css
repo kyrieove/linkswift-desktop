@@ -36,6 +36,7 @@ html, body {
 .diagnostic-step{font-weight:600}
 .diagnostic-selector{font-family:Consolas,"Cascadia Mono",monospace;word-break:break-all;opacity:.85;max-width:100%}
 .diagnostic-hint{color:var(--muted);flex-basis:100%;line-height:1.6}
+.diagnostic .button{margin-top:2px}
 .stall-notice{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding:7px 10px;border:1px solid #eadfc5;border-radius:5px;background:var(--amberbg);font-size:11px;color:var(--amber)}
 .stall-notice svg{width:13px;height:13px}
 .filter-archive{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);padding:4px 8px;border-radius:5px}

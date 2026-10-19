@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 
-const { Job } = require('../src/main/job');
+const { Job, JobManager } = require('../src/main/job');
 
 /**
  * The job state machine, driven by the observations the page actually sends.
@@ -265,6 +265,106 @@ async function main() {
     job.stopPolling();
     aria2.findGid = realFindGid;
   }
+
+  // 10. 重试先拉一次上游脚本：「上游改版」正是旧脚本造成的，沿用旧脚本的
+  //     重试等于原样再失败一次
+  {
+    let script = { source: '// ==UserScript==\n// @version 1.0.0\n', version: '1.0.0', origin: 'cache' };
+    const retried = [];
+    const manager = makeManager({
+      userscript: {
+        get: () => script,
+        refresh: async () => {
+          script = { source: '// ==UserScript==\n// @version 1.0.1\n', version: '1.0.1', origin: 'upstream' };
+          return script;
+        },
+      },
+      buildJob: (options) => (options.id ? makeOldJob() : makeStubJob(options, retried)),
+    });
+
+    const result = await manager.retry('job-old');
+    assert.strictEqual(retried.length, 1, '重试要重建一条任务');
+    assert.strictEqual(retried[0].script.version, '1.0.1', '重建时用刚拉到的脚本，而不是旧的那份');
+    assert.strictEqual(result.scriptVersion, '1.0.1', '返回里带本次脚本版本');
+    assert.strictEqual(result.scriptOrigin, 'upstream', '返回里带本次脚本来源');
+    assert(result.message.includes('1.0.1'), `重试要说明用了哪版脚本：${result.message}`);
+    assert(!manager.jobs.has('job-old'), '旧任务要被换掉，不是并排留下两条');
+  }
+
+  // 11. 上游拉不到：版本不变，并在 detail 里写明用的是缓存版本
+  {
+    const script = { source: '// ==UserScript==\n// @version 1.0.0\n', version: '1.0.0', origin: 'cache' };
+    const created = [];
+    const manager = makeManager({
+      userscript: { get: () => script, refresh: async () => script },
+      buildJob: (options) => (options.id ? makeOldJob() : makeStubJob(options, created)),
+    });
+
+    const result = await manager.retry('job-old');
+    assert.strictEqual(result.scriptVersion, '1.0.0', '拉不到新脚本时版本不变');
+    assert.strictEqual(result.scriptOrigin, 'cache');
+    assert(result.message.includes('缓存版本'), `拉不到新脚本要说明：${result.message}`);
+    assert(created.some((entry) => String(entry.detail).includes('缓存版本')), '任务上也要留下这句说明');
+  }
+}
+
+/**
+ * A JobManager with no window and no aria2. Everything crossed is the real
+ * JobManager (retry order, submit, the jobs map); only the two collaborators
+ * that would open a window or a socket are swapped.
+ *
+ * @param {{ userscript?: object, buildJob?: (options: any) => any }} [overrides]
+ */
+function makeManager(overrides = {}) {
+  const manager = new JobManager({
+    store: { getSettings: () => ({ aria2Mode: 'external', allowTransfer: false, aria2: {} }) },
+    userscript: overrides.userscript ?? { get: () => ({ version: '1.0.0', origin: 'cache', source: '' }) },
+    vendor: {},
+    resources: {},
+    partition: 'persist:check-job',
+    preloadPath: '',
+    emit: () => {},
+    daemon: { config: () => ({}) },
+    tasks: { remove: () => {}, save: () => {}, all: () => [] },
+    health: { record: () => {} },
+  });
+  const old = makeOldJob();
+  manager.jobs.set(old.id, old);
+  manager.buildJob = overrides.buildJob ?? (() => makeStubJob({}, []));
+  return manager;
+}
+
+/** The failed job retry throws away. */
+function makeOldJob() {
+  return {
+    id: 'job-old',
+    link: { raw: 'https://pan.quark.cn/s/qk_retry', provider: 'quark', shareId: 'qk_retry', passcode: null },
+    state: { phase: 'failed', code: 'upstream-redesigned', message: '页面变了' },
+    stopPolling: () => {},
+    close: () => {},
+  };
+}
+
+/** A job just after it was built: no window, so `prepare` and `load` only record. */
+function makeStubJob({ link, script }, created) {
+  return {
+    id: 'job-new-' + Math.random().toString(36).slice(2, 8),
+    link,
+    scriptVersion: script?.version,
+    scriptOrigin: script?.origin,
+    state: { phase: 'loading' },
+    setState(state) {
+      this.state = state;
+      if (created) created.push({ script, detail: state.detail });
+    },
+    snapshot() {
+      return { id: this.id, link: this.link, scriptVersion: this.scriptVersion, scriptOrigin: this.scriptOrigin };
+    },
+    prepare() {
+      return -1;
+    },
+    load() {},
+  };
 }
 
 main().then(

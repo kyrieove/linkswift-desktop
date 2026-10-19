@@ -125,11 +125,11 @@
 
 ### Implementation for User Story 5
 
-- [ ] T031 [US5] 在 `src/main/job.js` 的 `retry` 改为先 `await userscript.refresh()` 再重建任务：成功用新脚本、失败沿用当前版本，并在任务 `detail` 注明「重试使用缓存版本 vX」
-- [ ] T032 [US5] 在 `src/main/job.js` 任务上记录 `scriptVersion` 与 `scriptOrigin`（`upstream` / `cache` / `bundled`），随 Job 推送
-- [ ] T033 [US5] 在 `src/renderer/renderer.js` 诊断块提供「复制诊断」按钮与「重试」按钮，复制内容含步骤序号、目标、脚本版本与时间
-- [ ] T034 [US5] 扩展 `tools/check-job.js`：`refresh` 打桩返回新版本时重试后 `scriptOrigin === 'upstream'` 且版本变化；打桩失败时版本不变且 detail 含「缓存版本」
-- [ ] T035 [P] [US5] 在 `tools/probe/probe-ui.js` 断言诊断块含步骤序号文本、复制与重试按钮存在
+- [x] T031 [US5] 在 `src/main/job.js` 的 `retry` 改为先 `await userscript.refresh()` 再重建任务：成功用新脚本、失败沿用当前版本，并在任务 `detail` 注明「重试使用缓存版本 vX」
+- [x] T032 [US5] 在 `src/main/job.js` 任务上记录 `scriptVersion` 与 `scriptOrigin`（`upstream` / `cache` / `bundled`），随 Job 推送
+- [x] T033 [US5] 在 `src/renderer/renderer.js` 诊断块提供「复制诊断」按钮与「重试」按钮，复制内容含步骤序号、目标、脚本版本与时间
+- [x] T034 [US5] 扩展 `tools/check-job.js`：`refresh` 打桩返回新版本时重试后 `scriptOrigin === 'upstream'` 且版本变化；打桩失败时版本不变且 detail 含「缓存版本」
+- [x] T035 [P] [US5] 在 `tools/probe/probe-ui.js` 断言诊断块含步骤序号文本、复制与重试按钮存在
 
 **Checkpoint**: 失败可定位、可自愈，且不无限重试。
 
@@ -157,11 +157,32 @@
 
 ## Phase 9: Polish（收尾与横切）
 
-- [ ] T043 [P] 更新 `README.md`：批量粘贴、归档、诊断与重试、能力表四处说明，保持与实现一致
-- [ ] T044 [P] 更新 `LESSONS.md`：本轮新增的坑（如 500 上限与归档文件的损坏处理）一行一条
-- [ ] T045 跑 `quickstart.md` 全部 7 步并记录真实输出，未完成项如实列入报告
-- [ ] T046 跑 `npm run check` 全绿，确认输出里出现 `tools/check-archive.js` 与 `tools/check-provider-health.js` 两项
-- [ ] T047 自审本轮 diff 涉及 `src/` 全部改动：删死代码、只有单一取值的循环、重复逻辑；确认 `package.json`、`src/main/main.js` 中的内部标识未变
+- [x] T043 [P] 更新 `README.md`：批量粘贴、归档、诊断与重试、能力表四处说明，保持与实现一致
+- [x] T044 [P] 更新 `LESSONS.md`：本轮新增的坑（如 500 上限与归档文件的损坏处理）一行一条
+- [x] T045 跑 `quickstart.md` 全部 7 步并记录真实输出，未完成项如实列入报告
+- [x] T046 跑 `npm run check` 全绿，确认输出里出现 `tools/check-archive.js` 与 `tools/check-provider-health.js` 两项
+- [x] T047 自审本轮 diff 涉及 `src/` 全部改动：删死代码、只有单一取值的循环、重复逻辑；确认 `package.json`、`src/main/main.js` 中的内部标识未变
+
+### Phase 9 实跑记录（2026-10-19）
+
+T045 `quickstart.md` 七步的真实输出：
+
+| 步骤 | 命令 | 结果 |
+| --- | --- | --- |
+| 1 | `npm run check` | `EXIT=0`，`All checks PASSED.`；输出含 `OK: 7 archive cases`、`OK: 4 provider-health cases`、`PROBE OK` |
+| 2 | `npm run check:archive` | `EXIT=0`，7 个用例全 `ok`（501 条 → 主文件 500 + 归档 1 行且为最旧；归档后 files/progress 仍在；旧记录无 `archivedAt` 读回不报错） |
+| 3 | `npm run check:job` | `EXIT=0`，`check:job OK`；含第 3 步超时、部分完成、停滞、重试拉新脚本、拉不到用缓存版本共 11 组 |
+| 4 | `npm run check:share-link` | `EXIT=0`，`check:share-link OK` |
+| 5 | `npm run probe:ui` | `EXIT=0`，`PROBE OK`，断言 40 → **68**；截图 `%TEMP%\linkswift-probe-900x760-light*.png`、`-720x520-dark.png` |
+| 6 | 真实下载验收 | 夸克 `pan.quark.cn/s/ae8f001eadf6`：提交 → `downloading` → `done`；`033-V6.3.97-R1-优化版.zip` 335,846,630 字节，与 aria2 `completedLength` 一致，`.aria2` 残留 0；归档后离开主列表、归档视图可见、恢复成功 |
+| 7 | 重启后 | 关闭再启动，9 条任务（8 条历史 + 1 条新下载）全部原样载入，状态未变 |
+
+步骤 6 顺带验到的两条真实结论：
+
+- 新任务 `scriptVersion=1.1.4 / scriptOrigin=upstream`，历史任务为 `cache`，说明任务确实记下了自己那一版脚本。
+- 对失败任务点重试，真实返回 `已重新拉取脚本 v1.1.4 后重试。`（`origin=upstream`），重建的任务同步为 `done`。
+
+T047 自审结论：删掉只有单一调用方的 `Job.applyScript`，改在 `prepare` 里直接赋值；撤掉与本轮无关的 `fail('failed')` → `fail('network')` 改动；`package.json`、`src/main/main.js`、`src/shared/protocol.js` 本轮无改动。
 
 ---
 

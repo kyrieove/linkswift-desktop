@@ -18,6 +18,7 @@ const { UserscriptSource } = require('../../src/main/userscript');
 const { JobManager } = require('../../src/main/job');
 const { Aria2Daemon } = require('../../src/main/aria2-daemon');
 const { TaskStore } = require('../../src/main/task-store');
+const { ProviderHealthStore } = require('../../src/main/provider-health');
 const { loadVendor } = require('../../src/main/vendor');
 const { registerIpc } = require('../../src/main/ipc');
 
@@ -134,6 +135,7 @@ async function run(state) {
       },
       daemon,
       tasks,
+      health: new ProviderHealthStore(userDataDir),
     });
     jobs.register(ipcMain);
     registerIpc(ipcMain, jobs);
@@ -361,6 +363,65 @@ async function run(state) {
             { gid: 'gid-long-2', name: 'part-two.mkv', status: 'active', totalLength: 2000000, completedLength: 1000000, downloadSpeed: 250000, connections: 8 },
             { gid: 'gid-long-3', name: 'part-three.srt', status: 'waiting', totalLength: 2000000, completedLength: 0, downloadSpeed: 0, connections: 0 },
           ],
+        },
+      },
+      {
+        id: 'fixture-partial-done',
+        createdAt: now - 4500,
+        link: { raw: 'https://pan.quark.cn/s/qk_partial', provider: 'quark', shareId: 'qk_partial', passcode: null },
+        state: {
+          phase: 'done',
+          files: [
+            { name: 'ok-one.bin', url: 'https://example.com/1', headers: {} },
+            { name: 'ok-two.bin', url: 'https://example.com/2', headers: {} },
+            { name: 'bad-three.bin', url: 'https://example.com/3', headers: {} },
+          ],
+          progress: [
+            { gid: 'gid-p1', name: 'ok-one.bin', status: 'complete', totalLength: 100, completedLength: 100, downloadSpeed: 0, connections: 0 },
+            { gid: 'gid-p2', name: 'ok-two.bin', status: 'complete', totalLength: 100, completedLength: 100, downloadSpeed: 0, connections: 0 },
+            { gid: 'gid-p3', name: 'bad-three.bin', status: 'error', totalLength: 100, completedLength: 10, downloadSpeed: 0, connections: 0, errorCode: '22', errorMessage: '403 Forbidden' },
+          ],
+        },
+      },
+      {
+        id: 'fixture-stalled',
+        createdAt: now - 4600,
+        link: { raw: 'https://drive.uc.cn/s/uc_stall', provider: 'uc', shareId: 'uc_stall', passcode: null },
+        stalled: true,
+        state: {
+          phase: 'downloading',
+          files: [{ name: 'stalled.iso', url: 'https://example.com/stalled.iso', headers: {} }],
+          progress: [{ gid: 'gid-stall', name: 'stalled.iso', status: 'active', totalLength: 1000, completedLength: 300, downloadSpeed: 0, connections: 1 }],
+        },
+      },
+      {
+        // The failure the diagnosis is for: a page that changed under a known
+        // script, reported with the step that broke and the script that ran.
+        id: 'fixture-diagnosis',
+        createdAt: now - 4700,
+        link: { raw: 'https://pan.baidu.com/s/bd_diag', provider: 'baidu', shareId: 'bd_diag', passcode: null },
+        scriptVersion: '1.0.3',
+        scriptOrigin: 'upstream',
+        state: {
+          phase: 'failed',
+          code: 'upstream-redesigned',
+          message: '页面上没找到该点的东西，上游可能改版了（保存到网盘）',
+          detail: 'waitFor .x-button-box: 超时 15000ms',
+          step: 2,
+          verb: 'wait-for',
+          selector: '.x-button-box',
+          hint: '页面结构变了：点重试会重新拉取最新脚本，再跑一遍。',
+        },
+      },
+      {
+        // Archived by the user: it left the main list and only the archive view has it.
+        id: 'fixture-archived',
+        createdAt: now - 4800,
+        link: { raw: 'https://pan.quark.cn/s/qk_arch', provider: 'quark', shareId: 'qk_arch', passcode: null },
+        archivedAt: now - 4000,
+        state: {
+          phase: 'done',
+          files: [{ name: 'archived-file.zip', url: 'https://example.com/arch.zip', headers: {} }],
         },
       },
     ];
@@ -670,6 +731,24 @@ async function run(state) {
     );
     report.assertionsPassed += 1;
 
+    // What a user can tell apart without opening anything, in the order the
+    // spec's user stories ask for it: five states, a stall, a diagnosis, a batch
+    // action, two kinds of empty, and the capability table.
+
+    report.fiveStates = await assertFiveStates(read, win);
+    report.stalled = await assertStalled(read, win);
+    report.diagnostic = await assertDiagnostic(read, win);
+    report.batch = await assertBatchActions(read, win);
+    report.emptyStates = await assertEmptyStates(read, win);
+    report.providerHealth = await assertProviderHealth(read, win);
+    report.assertionsPassed +=
+      report.fiveStates.passed +
+      report.stalled.passed +
+      report.diagnostic.passed +
+      report.batch.passed +
+      report.emptyStates.passed +
+      report.providerHealth.passed;
+
     assert.strictEqual(consoleMessages.length, 0, `Unexpected console errors: ${consoleMessages.join('\n')}`);
     report.consoleMessages = consoleMessages;
     report.ok = true;
@@ -746,6 +825,233 @@ async function run(state) {
       }`
     );
   }
+}
+
+/* ------------------------------------------------------------------ Spec 001 UI --- */
+
+/**
+ * Every helper below runs against the fixtures pushed above, on the real
+ * renderer. A helper returns how many assertions it passed and throws on the
+ * first one that does not hold, so `npm run check` names the broken contract.
+ */
+
+/** The five states a user has to tell apart, each on its own row. */
+async function assertFiveStates(read, win) {
+  const rows = JSON.parse(
+    await read(`JSON.stringify(Array.from(document.querySelectorAll(".taskrow")).map((row) => ({
+      id: row.dataset.jobId,
+      phase: row.dataset.phase || "",
+      label: row.querySelector(".status")?.textContent.trim() || "",
+    })))`)
+  );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const expected = [
+    ['fixture-quark-downloading', '下载中'],
+    ['fixture-uc-paused', '已暂停'],
+    ['fixture-xunlei-human-manual', '需你操作一步'],
+    ['fixture-diagnosis', '已失败'],
+    ['fixture-partial-done', '部分完成 1 失败 / 2 完成'],
+  ];
+  const seen = new Map();
+  for (const [id, label] of expected) {
+    const row = byId.get(id);
+    assert(row, `Every state must have its own row, ${id} is missing`);
+    assert(row.phase, `${id} must carry data-phase`);
+    assert.strictEqual(row.label, label, `${id} must read "${label}", reads "${row.label}"`);
+    assert(!seen.has(row.phase), `Two states share the same data-phase "${row.phase}"`);
+    seen.set(row.phase, label);
+  }
+
+  // Which one needs the user must be readable without opening anything, and the
+  // action that unblocks it has to be on the row.
+  const manualRow = byId.get('fixture-xunlei-human-manual');
+  const manualActions = await read(
+    `JSON.stringify(Array.from(document.querySelector('[data-job-id="fixture-xunlei-human-manual"]').querySelectorAll("button")).map((b) => b.getAttribute("aria-label") || b.textContent.trim()))`
+  );
+  assert(manualActions.includes('打开我的云盘'), `A needs-human row must carry its action, got ${manualActions}`);
+
+  return { passed: 4, phases: Object.fromEntries(seen), manualLabel: manualRow.label, archivedHidden: true };
+}
+
+/** A stall is a flag on a running download, with a retry the user can press. */
+async function assertStalled(read) {
+  const stall = JSON.parse(
+    await read(`JSON.stringify((() => {
+      const box = document.querySelector('.taskrow[data-job-id="fixture-stalled"] .stall-notice');
+      if (!box) return null;
+      const retry = Array.from(box.querySelectorAll("button")).find((b) => (b.getAttribute("aria-label") || "").startsWith("重试"));
+      return { text: box.textContent.trim(), retry: Boolean(retry), disabled: retry ? retry.disabled : true };
+    })())`)
+  );
+  assert(stall, 'A stalled download must show .stall-notice on its row');
+  assert(stall.text.includes('可能已停滞'), `The notice must say it stalled, reads "${stall.text}"`);
+  assert(stall.retry && !stall.disabled, 'The notice must offer a clickable retry');
+  return { passed: 2, stall };
+}
+
+/** A failure names the step that broke and offers copy + retry. */
+async function assertDiagnostic(read) {
+  const row = JSON.parse(
+    await read(`JSON.stringify((() => {
+      const box = document.querySelector('.taskrow[data-job-id="fixture-diagnosis"] .diagnostic');
+      if (!box) return null;
+      const labels = Array.from(box.querySelectorAll("button")).map((b) => b.getAttribute("aria-label") || "");
+      return {
+        text: box.textContent,
+        step: box.querySelector(".diagnostic-step")?.textContent || "",
+        selector: box.querySelector(".diagnostic-selector")?.textContent || "",
+        hint: box.querySelector(".diagnostic-hint")?.textContent || "",
+        copy: labels.some((l) => l.startsWith("复制诊断")),
+        retry: labels.some((l) => l.startsWith("重试")),
+      };
+    })())`)
+  );
+  assert(row, 'A failed job must show .diagnostic on its row');
+  assert.strictEqual(row.step, '第 3 步：wait-for', `The diagnostic must name the step, reads "${row.step}"`);
+  assert.strictEqual(row.selector, '.x-button-box', 'The diagnostic must name the target it could not find');
+  assert(row.hint.includes('重试'), `The diagnostic must say what fixes it, reads "${row.hint}"`);
+  assert(row.copy && row.retry, 'The diagnostic must offer copy and retry');
+
+  // The detail panel has to carry the same information, including the script the
+  // page ran, or the report cannot be sent to anyone.
+  await read(`Array.from(document.querySelector('.taskrow[data-job-id="fixture-diagnosis"]').querySelectorAll("button")).find((b) => (b.getAttribute("aria-label") || "").startsWith("查看"))?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const drawer = JSON.parse(
+    await read(`JSON.stringify((() => {
+      const node = document.getElementById("drawer");
+      return {
+        step: node?.querySelector(".diagnostic-step")?.textContent || "",
+        text: node?.textContent || "",
+        copy: Array.from(node?.querySelectorAll("button") || []).some((b) => (b.getAttribute("aria-label") || "").startsWith("复制诊断")),
+        retry: Array.from(node?.querySelectorAll("button") || []).some((b) => (b.getAttribute("aria-label") || "").startsWith("重新获取直链")),
+      };
+    })())`)
+  );
+  assert.strictEqual(drawer.step, '第 3 步：wait-for', 'The detail panel must name the failed step');
+  assert(drawer.text.includes('1.0.3') && drawer.text.includes('upstream'), 'The detail panel must name the script version that ran');
+  assert(drawer.copy && drawer.retry, 'The detail panel must offer copy and retry');
+  await read(`document.querySelector('#drawer .drawerheader button')?.click()`);
+  return { passed: 7, row, drawerStep: drawer.step };
+}
+
+/** Selecting rows exposes a batch bar with the actions those rows can take. */
+async function assertBatchActions(read) {
+  const before = await read(`Boolean(document.getElementById("selection-actions")?.hidden)`);
+  assert.strictEqual(before, true, 'The batch bar must stay hidden while nothing is selected');
+
+  await read(`(() => {
+    for (const id of ["fixture-quark-downloading", "fixture-uc-paused"]) {
+      const box = document.querySelector('.taskrow[data-job-id="' + id + '"] input.job-select');
+      box.checked = true;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const bar = JSON.parse(
+    await read(`JSON.stringify((() => {
+      const node = document.getElementById("selection-actions");
+      return {
+        hidden: node.hidden,
+        bulkClass: node.classList.contains("bulk-bar"),
+        labels: Array.from(node.querySelectorAll("button")).filter((b) => !b.hidden).map((b) => b.textContent.trim()),
+      };
+    })())`)
+  );
+  assert.strictEqual(bar.hidden, false, 'Selecting a row must reveal the batch bar');
+  assert(bar.bulkClass, 'The batch bar must be the .bulk-bar element');
+  assert(bar.labels.includes('归档') && bar.labels.includes('删除'), `The batch bar must offer 归档 and 删除, got ${bar.labels}`);
+
+  // De-selecting puts it away again.
+  await read(`(() => {
+    for (const box of document.querySelectorAll(".taskrow input.job-select")) {
+      if (!box.checked) continue;
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.strictEqual(
+    await read(`Boolean(document.getElementById("selection-actions")?.hidden)`),
+    true,
+    'The batch bar must go away when nothing is selected'
+  );
+  return { passed: 5, bar };
+}
+
+/** An empty filter and an empty list say different things and differ in what they offer. */
+async function assertEmptyStates(read) {
+  await read(`(() => {
+    const s = document.getElementById("search");
+    s.value = "no-such-task-anywhere";
+    s.dispatchEvent(new Event("input"));
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const filteredEmpty = JSON.parse(
+    await read(`JSON.stringify((() => {
+      const node = document.querySelector(".empty");
+      return { heading: node?.querySelector("h3")?.textContent || "", buttons: Array.from(node?.querySelectorAll("button") || []).map((b) => b.textContent.trim()) };
+    })())`)
+  );
+  assert.strictEqual(filteredEmpty.heading, '筛选为空', `An empty filter must say 筛选为空, reads "${filteredEmpty.heading}"`);
+  assert(filteredEmpty.buttons.includes('清空筛选'), `An empty filter must offer 清空筛选, got ${filteredEmpty.buttons}`);
+
+  const before = Number(await read('document.querySelectorAll(".taskrow").length'));
+  await read(`Array.from(document.querySelectorAll(".empty button")).find((b) => b.textContent.trim() === "清空筛选")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const after = Number(await read('document.querySelectorAll(".taskrow").length'));
+  assert(before === 0 && after > 0, `Clearing the filter must bring the list back, went ${before} -> ${after}`);
+
+  await read(`document.querySelector('.taskrow[data-job-id="fixture-quark-downloading"] input.job-select')?.dispatchEvent(new Event("change", { bubbles: true }))`);
+  await read(`document.getElementById("archive-toggle")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const archiveRows = JSON.parse(
+    await read(`JSON.stringify(Array.from(document.querySelectorAll(".taskrow")).map((row) => row.dataset.jobId))`)
+  );
+  assert(archiveRows.includes('fixture-archived'), 'The archive view must hold the archived job');
+  assert(!archiveRows.includes('fixture-quark-downloading'), 'The archive view must not hold live jobs');
+
+  await read(`document.getElementById("archive-toggle")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const taskRows = JSON.parse(
+    await read(`JSON.stringify(Array.from(document.querySelectorAll(".taskrow")).map((row) => row.dataset.jobId))`)
+  );
+  assert(!taskRows.includes('fixture-archived'), 'The main list must not hold archived jobs');
+  return { passed: 6, filteredEmpty, archiveRows: archiveRows.length, taskRows: taskRows.length };
+}
+
+/** The settings page says what each netdisk can do and what happened here last. */
+async function assertProviderHealth(read) {
+  await read(`document.querySelector('[data-page="settings"]')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await read(`document.querySelector('[data-settingtab="providers"]')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const health = JSON.parse(
+    await read(`JSON.stringify({
+      rows: Array.from(document.querySelectorAll("#provider-health-body tr")).map((row) => ({
+        provider: row.dataset.provider,
+        cells: Array.from(row.querySelectorAll("td")).map((c) => c.textContent.trim()),
+      })),
+      archiveCount: document.getElementById("archive-count")?.textContent || "",
+      clearArchive: Boolean(document.getElementById("clear-archive")),
+    })`)
+  );
+  assert.deepStrictEqual(
+    health.rows.map((row) => row.provider),
+    ['quark', 'baidu', 'uc', 'xunlei'],
+    `The capability table must list all four netdisks, got ${health.rows.map((row) => row.provider)}`
+  );
+  for (const row of health.rows) {
+    assert.strictEqual(row.cells.length, 3, `${row.provider} must have capability and last-result cells`);
+    assert(row.cells[1], `${row.provider} must name its capability`);
+    assert.strictEqual(row.cells[2], '未验证', `${row.provider} has no real run yet, must read 未验证, reads "${row.cells[2]}"`);
+  }
+  assert.strictEqual(health.archiveCount, '1', `The archive count must match the archived job, reads "${health.archiveCount}"`);
+  assert(health.clearArchive, 'The settings page must offer 清空归档列表');
+
+  await read(`document.querySelector('[data-page="tasks"]')?.click()`);
+  return { passed: 4, rows: health.rows.length, archiveCount: health.archiveCount };
 }
 
 run(state)

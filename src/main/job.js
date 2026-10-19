@@ -471,10 +471,12 @@ class Job {
    *   onDone: (contentsId: number) => void,
    *   persist?: (job: Job) => void,
    *   allowTransfer?: () => boolean,
+   *   config?: () => import('../shared/protocol').Aria2Config | null,
+   *   script?: { source: string, version: string, origin: string } | null,
    *   session?: import('electron').Session,
    * }} options
    */
-  constructor({ id, createdAt, link, deliver, emit, onDone, persist, allowTransfer, config, session }) {
+  constructor({ id, createdAt, link, deliver, emit, onDone, persist, allowTransfer, config, script, session }) {
     this.id = id ?? randomUUID();
     this.createdAt = createdAt ?? Date.now();
     this.link = link;
@@ -513,6 +515,10 @@ class Job {
     /** Bytes seen at the last tick, and when they last grew; drives `stalled`. */
     this.lastArrived = 0;
     this.lastArrivedAt = Date.now();
+    // The userscript this job actually runs on, kept on the job so a failure can
+    // name the version that produced it instead of the one on disk now.
+    this.scriptVersion = script?.version;
+    this.scriptOrigin = script?.origin;
   }
 
   stopPolling() {
@@ -751,13 +757,22 @@ class Job {
 
   /**
    * Create the window and return its webContents id synchronously, so the caller
-   * can route observations before the first one arrives.
+   * can route observations before the first one arrives. The submitter may have
+   * refreshed the page script since the job was built; the window reads it when
+   * it boots, so the job records that same version here.
    *
    * @param {string} partition
    * @param {string} preloadPath
+   * @param {{ source: string, version: string, origin: string }} [script]
    * @returns {number}
    */
-  prepare(partition, preloadPath) {
+  prepare(partition, preloadPath, script) {
+    // Only a job that has not loaded a page yet can switch: the window keeps the
+    // script it was booted with.
+    if (script) {
+      this.scriptVersion = script.version;
+      this.scriptOrigin = script.origin;
+    }
     const provider = getProvider(this.link.provider);
     if (!provider) {
       this.fail('unsupported-provider', `暂不支持这个网盘：${this.link.provider}`);
@@ -1601,9 +1616,11 @@ class JobManager {
    * others back.
    *
    * @param {string} raw
+   * @param {{ script?: { source: string, version: string, origin: string } }} [options]
+   *   The exact page script to run on, for a retry that just refreshed it.
    * @returns {{ ok: boolean, jobs: Array<{ raw: string, jobId?: string, duplicateOf?: string, error?: string }> }}
    */
-  submit(raw) {
+  submit(raw, { script } = {}) {
     const text = String(raw ?? '');
     const links = parseShareLinks(text);
     if (!links.length) {
@@ -1621,11 +1638,11 @@ class JobManager {
         results.push({ raw: link.raw, duplicateOf: existing.id });
         continue;
       }
-      const job = this.buildJob({ link });
+      const job = this.buildJob({ link, script });
       this.jobs.set(job.id, job);
       this.emit(job.snapshot());
 
-      const contentsId = job.prepare(this.partition, this.preloadPath);
+      const contentsId = job.prepare(this.partition, this.preloadPath, script);
       if (contentsId >= 0) this.byContents.set(contentsId, job);
       job.load();
       results.push({ raw: link.raw, jobId: job.id });
@@ -1684,14 +1701,16 @@ class JobManager {
   }
 
   /**
-   * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').ShareLink }} options
+   * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').ShareLink,
+   *   script?: { source: string, version: string, origin: string } }} options
    * @returns {Job}
    */
-  buildJob({ id, createdAt, link }) {
+  buildJob({ id, createdAt, link, script }) {
     return new Job({
       id,
       createdAt,
       link,
+      script: script ?? this.userscript.get(),
       deliver: (files) => this.deliver(files),
       emit: (updated) => this.emit(updated.snapshot()),
       onDone: (contentsId) => this.byContents.delete(contentsId),
@@ -1839,12 +1858,15 @@ class JobManager {
 
   /**
    * Throwing the job away and extracting the share link again is the only fix
-   * for an expired direct link, so that is what retry means.
+   * for an expired direct link, so that is what retry means. The page script is
+   * refreshed first: "upstream redesigned" is exactly the failure a stale script
+   * causes, and waiting for the next launch would retry with the same stale copy.
+   * When the refresh fails the cached version is used, and each new job says so.
    *
    * @param {string} jobId
-   * @returns {{ ok: boolean, jobId?: string, message?: string }}
+   * @returns {Promise<{ ok: boolean, jobId?: string, message?: string, jobs?: Array<{ raw: string, jobId?: string }> }>}
    */
-  retry(jobId) {
+  async retry(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return { ok: false, message: '这个任务已经不在列表里了。' };
     const raw = job.link.raw;
@@ -1852,7 +1874,18 @@ class JobManager {
     job.close();
     this.tasks.remove(job.id);
     this.jobs.delete(job.id);
-    return this.submit(raw);
+
+    const script = await this.userscript.refresh();
+    const result = this.submit(raw, { script });
+    const detail =
+      script.origin === 'upstream'
+        ? `已重新拉取脚本 v${script.version} 后重试。`
+        : `上游脚本没拉到，重试使用缓存版本 v${script.version}（${script.origin}）。`;
+    for (const entry of result.jobs) {
+      const created = entry.jobId ? this.jobs.get(entry.jobId) : null;
+      if (created) created.setState({ ...created.state, detail });
+    }
+    return { ...result, message: detail, scriptVersion: script.version, scriptOrigin: script.origin };
   }
 
   /** @param {string} jobId */
