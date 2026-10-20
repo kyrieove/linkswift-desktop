@@ -5,5 +5,8 @@ out/
 .DS_Store
 Thumbs.db
 Start aria2 download.bat
+start-linkswift.bat
+probe-readme.md
+tools/probe/shot*
 test_download/
 .dsh/tmp/
