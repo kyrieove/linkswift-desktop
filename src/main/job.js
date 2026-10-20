@@ -244,19 +244,47 @@ function parseIpv4(ip) {
   return num >>> 0;
 }
 
+function cidrToMask(bits) {
+  return bits === 0 ? 0 : ((0xffffffff << (32 - bits)) >>> 0);
+}
+
+function parseCidr(cidr) {
+  const [ipStr, bitsStr] = cidr.split('/');
+  const ip = parseIpv4(ipStr);
+  const bits = parseInt(bitsStr, 10);
+  const mask = cidrToMask(bits);
+  return { network: (ip & mask) >>> 0, mask };
+}
+
+/**
+ * Full classification table based on IANA IPv4 Special-Purpose Address Registry.
+ * Any address in these ranges is not globally reachable on the public Internet.
+ */
+const NON_PUBLIC_IPV4_CIDRS = [
+  '0.0.0.0/8',          // RFC 1122 This host on this network
+  '10.0.0.0/8',         // RFC 1918 Private-Use
+  '100.64.0.0/10',      // RFC 6598 Shared Address Space (CGNAT)
+  '127.0.0.0/8',        // RFC 1122 Loopback
+  '169.254.0.0/16',     // RFC 3927 Link-Local
+  '172.16.0.0/12',      // RFC 1918 Private-Use
+  '192.0.0.0/24',       // RFC 6890 IETF Protocol Assignments
+  '192.0.2.0/24',       // RFC 5737 Documentation (TEST-NET-1)
+  '192.88.99.0/24',     // RFC 7526 6to4 Relay Anycast
+  '192.168.0.0/16',     // RFC 1918 Private-Use
+  '198.18.0.0/15',      // RFC 2544 Benchmarking
+  '198.51.100.0/24',    // RFC 5737 Documentation (TEST-NET-2)
+  '203.0.113.0/24',     // RFC 5737 Documentation (TEST-NET-3)
+  '224.0.0.0/4',        // RFC 5771 Multicast
+  '240.0.0.0/4',        // RFC 1112 Reserved for Future Use
+  '255.255.255.255/32', // RFC 919 Limited Broadcast
+].map(parseCidr);
+
 function isPrivateIpv4(ip) {
   const num = parseIpv4(ip);
   if (num === null) return true;
-  if ((num >>> 24) === 0) return true; // 0.0.0.0/8 (Current network)
-  if ((num >>> 24) === 10) return true; // 10.0.0.0/8 (Private-use)
-  if ((num >>> 22) === 401) return true; // 100.64.0.0/10 (Shared Address Space / CGNAT)
-  if ((num >>> 24) === 127) return true; // 127.0.0.0/8 (Loopback)
-  if ((num >>> 16) === ((169 << 8) | 254)) return true; // 169.254.0.0/16 (Link-Local)
-  if ((num >>> 20) === ((172 << 4) | 1)) return true; // 172.16.0.0/12 (Private-use)
-  if ((num >>> 16) === ((192 << 8) | 168)) return true; // 192.168.0.0/16 (Private-use)
-  if ((num >>> 17) === 25353) return true; // 198.18.0.0/15 (Benchmarking)
-  if ((num >>> 28) === 14) return true; // 224.0.0.0/4 (Multicast)
-  if ((num >>> 28) === 15) return true; // 240.0.0.0/4 (Reserved / Broadcast)
+  for (const { network, mask } of NON_PUBLIC_IPV4_CIDRS) {
+    if (((num & mask) >>> 0) === network) return true;
+  }
   return false;
 }
 

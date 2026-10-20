@@ -94,6 +94,41 @@ app.whenReady().then(async () => {
       'Baidu boot must NOT expose quark_social_token'
     );
 
+    // 1.4 [F-004] Generic sensitive setting keys must NOT be exposed as global
+    store.setValue('setting_rpc_token', 'legacy-secret-token');
+    store.setValue('setting_auth_token', 'legacy-auth-token');
+    store.setValue('config.session_token', 'session-token-xyz');
+    store.setValue('setting_ui_theme', 'dark');
+
+    const quarkBoot2 = jm.buildBoot('quark');
+    assert.strictEqual(
+      quarkBoot2.values['setting_rpc_token'],
+      undefined,
+      'setting_rpc_token must NOT be exposed'
+    );
+    assert.strictEqual(
+      quarkBoot2.values['setting_auth_token'],
+      undefined,
+      'setting_auth_token must NOT be exposed'
+    );
+    assert.strictEqual(
+      quarkBoot2.values['config.session_token'],
+      undefined,
+      'config.session_token must NOT be exposed'
+    );
+    assert.strictEqual(
+      quarkBoot2.values['setting_ui_theme'],
+      'dark',
+      'Allowed non-sensitive setting_ui_theme must be preserved'
+    );
+
+    const baiduBoot2 = jm.buildBoot('baidu');
+    assert.strictEqual(
+      baiduBoot2.values['setting_rpc_token'],
+      undefined,
+      'setting_rpc_token must NOT be exposed to baidu'
+    );
+
     // 2. [F-005] authorizeUiEvent Unit Tests (Exact origin, fail-closed)
     const fakeUiWebContents = { id: 1001, isDestroyed: () => false };
     const expectedFileUrl = 'file:///app/src/renderer/index.html';

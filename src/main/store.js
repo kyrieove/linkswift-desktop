@@ -37,29 +37,35 @@ const DEFAULT_SETTINGS = {
 const ARCHIVE_LIMIT_MIN = 100;
 const ARCHIVE_LIMIT_MAX = 2000;
 
-/** Explicit allowlist of non-sensitive global configuration keys */
-const GLOBAL_SETTING_KEYS = new Set([
+/** Explicit allowlist of audited, non-sensitive global configuration keys */
+const GLOBAL_ALLOWED_KEYS = new Set([
   'setting_init',
   'setting_aria2_rpc',
-  'setting_idm_rpc',
+  'setting_ui_theme',
+  'setting_theme_color',
   'setting_config_version',
   'setting_curl_terminal',
-  'setting_bitcomet_rpc',
-  'setting_abdm_rpc',
-  'setting_ui_theme',
 ]);
 
-const KNOWN_PROVIDERS = ['baidu', 'quark', 'uc', 'xunlei'];
+const SENSITIVE_PATTERNS = [
+  'token',
+  'auth',
+  'pass',
+  'secret',
+  'cookie',
+  'session',
+  'credential',
+  'key',
+];
+
+function isSensitiveKey(key) {
+  const lower = key.toLowerCase();
+  return SENSITIVE_PATTERNS.some((pattern) => lower.includes(pattern));
+}
 
 function isGlobalKey(key) {
-  if (GLOBAL_SETTING_KEYS.has(key)) return true;
-  if (key.startsWith('setting_') || key.startsWith('config.')) {
-    for (const p of KNOWN_PROVIDERS) {
-      if (key.toLowerCase().includes(p)) return false;
-    }
-    return true;
-  }
-  return false;
+  if (isSensitiveKey(key)) return false;
+  return GLOBAL_ALLOWED_KEYS.has(key);
 }
 
 function isProviderKey(key, providerId) {
