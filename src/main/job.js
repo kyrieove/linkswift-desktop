@@ -3,6 +3,8 @@
 const { BrowserWindow, clipboard, app, shell, session } = require('electron');
 const http = require('node:http');
 const https = require('node:https');
+const dns = require('node:dns');
+const net = require('node:net');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
@@ -205,56 +207,162 @@ function extractFromAria2Body(body) {
     if (separator > 0) headers[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
   }
 
-  return uris.map((url) => ({
-    url: String(url),
-    name: options?.out || path.basename(new URL(String(url)).pathname) || 'download',
-    headers,
-  }));
+  const files = [];
+  for (const url of uris) {
+    let name = options?.out;
+    if (!name) {
+      try {
+        name = path.basename(new URL(String(url)).pathname) || 'download';
+      } catch {
+        name = 'download';
+      }
+    }
+    const file = {
+      url: String(url),
+      name: String(name),
+      headers,
+    };
+    files.push(aria2.validateExtractedFile(file));
+  }
+  return files;
+}
+
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+function isPrivateIp(ip) {
+  if (!ip || typeof ip !== 'string') return true;
+  // IPv4 loopback (127.0.0.0/8)
+  if (/^127\./.test(ip)) return true;
+  // IPv4 private (10.0.0.0/8)
+  if (/^10\./.test(ip)) return true;
+  // IPv4 private (172.16.0.0/12)
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) return true;
+  // IPv4 private (192.168.0.0/16)
+  if (/^192\.168\./.test(ip)) return true;
+  // IPv4 link-local (169.254.0.0/16, including 169.254.169.254)
+  if (/^169\.254\./.test(ip)) return true;
+  // Broadcast / current / reserved
+  if (/^0\./.test(ip) || ip === '255.255.255.255') return true;
+  // IPv6 loopback (::1), unspecified (::)
+  if (ip === '::1' || ip === '::') return true;
+  // IPv6 unique local (fc00::/7)
+  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;
+  // IPv6 link-local (fe80::/10)
+  if (/^fe[89ab][0-9a-f]:/i.test(ip)) return true;
+  return false;
+}
+
+async function validateProxyTargetUrl(targetUrl, allowLocalFixture) {
+  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+    throw new Error(`禁止代理非 http/https 协议目标: ${targetUrl.protocol}`);
+  }
+
+  if (allowLocalFixture) {
+    return null;
+  }
+
+  const hostname = targetUrl.hostname.toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    throw new Error('禁止访问 localhost 目标 (SSRF 防御)');
+  }
+
+  if (net.isIP(hostname)) {
+    if (isPrivateIp(hostname)) {
+      throw new Error(`禁止访问私有或本地网络目标 (SSRF 防御): ${hostname}`);
+    }
+    return hostname;
+  }
+
+  let addresses;
+  try {
+    addresses = await dns.promises.lookup(hostname, { all: true });
+  } catch (err) {
+    throw new Error(`DNS 解析失败: ${hostname} (${err.message})`);
+  }
+
+  if (!addresses || addresses.length === 0) {
+    throw new Error(`DNS 解析无结果: ${hostname}`);
+  }
+
+  for (const addr of addresses) {
+    if (isPrivateIp(addr.address)) {
+      throw new Error(`禁止访问私有或本地网络目标 (SSRF 防御): ${hostname} -> ${addr.address}`);
+    }
+  }
+
+  return addresses[0].address;
 }
 
 /**
  * @param {{ url: string, method: string, headers: Record<string, string> }} options
  * @param {string | null} body
+ * @param {string | null} [pinnedIp]
  * @returns {Promise<{ statusCode: number, statusMessage: string, rawHeaders: string[], headers: Record<string, string | string[] | undefined>, setCookie: string[], buffer: Buffer }>}
  */
-function hop(options, body) {
+function hop(options, body, pinnedIp) {
   return new Promise((resolve, reject) => {
     const target = new URL(options.url);
     const transport = target.protocol === 'https:' ? https : http;
 
-    const request = transport.request(
-      {
-        protocol: target.protocol,
-        hostname: target.hostname,
-        port: target.port,
-        path: `${target.pathname}${target.search}`,
-        method: options.method,
-        headers: {
-          ...options.headers,
-          // Without an explicit length Node falls back to chunked encoding, and
-          // quark's API answers a chunked POST with 400.
-          ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
-        },
+    const requestOptions = {
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: options.method,
+      headers: {
+        ...options.headers,
+        // Without an explicit length Node falls back to chunked encoding, and
+        // quark's API answers a chunked POST with 400.
+        ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
       },
-      (response) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => {
-          const rawSetCookie = response.headers['set-cookie'];
-          const setCookie = Array.isArray(rawSetCookie)
-            ? rawSetCookie
-            : rawSetCookie ? [rawSetCookie] : [];
-          resolve({
-            statusCode: response.statusCode ?? 0,
-            statusMessage: response.statusMessage ?? '',
-            rawHeaders: response.rawHeaders ?? [],
-            headers: response.headers ?? {},
-            setCookie,
-            buffer: Buffer.concat(chunks),
-          });
+    };
+
+    if (pinnedIp) {
+      requestOptions.lookup = (hostname, opts, cb) => {
+        cb(null, pinnedIp, pinnedIp.includes(':') ? 6 : 4);
+      };
+    }
+
+    const request = transport.request(requestOptions, (response) => {
+      let totalBytes = 0;
+      let destroyed = false;
+      const chunks = [];
+      response.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) {
+          if (!destroyed) {
+            destroyed = true;
+            response.destroy();
+            request.destroy();
+            reject(new Error('响应体积超出 32 MiB 上限'));
+          }
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('error', (err) => {
+        if (!destroyed) reject(err);
+      });
+      response.on('aborted', () => {
+        if (!destroyed) reject(new Error('响应连接中断'));
+      });
+      response.on('end', () => {
+        if (destroyed) return;
+        const rawSetCookie = response.headers['set-cookie'];
+        const setCookie = Array.isArray(rawSetCookie)
+          ? rawSetCookie
+          : rawSetCookie ? [rawSetCookie] : [];
+        resolve({
+          statusCode: response.statusCode ?? 0,
+          statusMessage: response.statusMessage ?? '',
+          rawHeaders: response.rawHeaders ?? [],
+          headers: response.headers ?? {},
+          setCookie,
+          buffer: Buffer.concat(chunks),
         });
-      },
-    );
+      });
+    });
 
     request.on('error', reject);
     request.setTimeout(30000, () => request.destroy(new Error('请求超时')));
@@ -318,11 +426,11 @@ function parseSetCookie(headerStr, currentUrl) {
  * Node's fetch refuses to send forbidden header names such as Referer and
  * Origin, and the netdisk APIs need both. Use the raw HTTP client instead.
  *
- * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null }} request
+ * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null, allowLocalFixture?: boolean }} request
  * @param {import('electron').Session} [ses]
  * @returns {Promise<{ ok: boolean, status: number, statusText: string, text: string, headers: string, finalUrl: string }>}
  */
-async function proxyRequest({ url, method, headers, body }, ses) {
+async function proxyRequest({ url, method, headers, body, allowLocalFixture = false }, ses) {
   const MAX_HOPS = 10;
   let currentUrl = new URL(url);
   let currentMethod = method;
@@ -340,6 +448,7 @@ async function proxyRequest({ url, method, headers, body }, ses) {
   }
 
   for (let hopCount = 0; hopCount < MAX_HOPS; hopCount++) {
+    const pinnedIp = await validateProxyTargetUrl(currentUrl, allowLocalFixture);
     const hopHeaders = { ...currentHeaders };
 
     if (ses) {
@@ -385,6 +494,7 @@ async function proxyRequest({ url, method, headers, body }, ses) {
         headers: hopHeaders,
       },
       currentBody,
+      pinnedIp,
     );
 
     if (ses && hopResult.setCookie.length > 0) {
@@ -406,6 +516,22 @@ async function proxyRequest({ url, method, headers, body }, ses) {
     if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
       const locStr = Array.isArray(location) ? location[0] : location;
       const next = new URL(locStr, currentUrl);
+
+      if (next.origin !== currentUrl.origin) {
+        callerCookie = null;
+        for (const k of Object.keys(currentHeaders)) {
+          const lk = k.toLowerCase();
+          if (
+            lk === 'cookie' ||
+            lk === 'authorization' ||
+            lk === 'proxy-authorization' ||
+            lk === 'origin' ||
+            lk === 'referer'
+          ) {
+            delete currentHeaders[k];
+          }
+        }
+      }
 
       if (next.hash) {
         return {
@@ -1138,7 +1264,11 @@ class Job {
    */
   queueFiles(files) {
     if (this.settled) return;
+    const validated = [];
     for (const file of files) {
+      validated.push(aria2.validateExtractedFile(file));
+    }
+    for (const file of validated) {
       if (!this.pendingFiles.some((queued) => queued.url === file.url)) this.pendingFiles.push(file);
     }
     if (this.state.phase === 'loading' || this.state.phase === 'extracting') {
@@ -1547,13 +1677,49 @@ class JobManager {
     this.byContents = new Map();
   }
 
+  /**
+   * Validates that an incoming IPC event belongs to an authorized netdisk window and frame.
+   *
+   * @param {import('electron').IpcMainEvent} event
+   * @returns {boolean}
+   */
+  authorizeNetdiskEvent(event) {
+    if (!event || !event.sender) return false;
+    const job = this.byContents.get(event.sender.id);
+    if (!job) return false;
+    if (job.window && !job.window.isDestroyed() && event.sender !== job.window.webContents) {
+      return false;
+    }
+    if (event.senderFrame && event.senderFrame.parent !== null) {
+      return false;
+    }
+    if (event.senderFrame && event.senderFrame.url) {
+      try {
+        const parsed = new URL(event.senderFrame.url);
+        if (parsed.protocol !== 'https:') return false;
+        const provider = getProvider(job.link.provider);
+        if (provider && !provider.matches(parsed)) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** @param {import('electron').IpcMain} ipcMain */
   register(ipcMain) {
     ipcMain.on(INTERNAL.boot, (event) => {
+      if (!this.authorizeNetdiskEvent(event)) {
+        event.returnValue = null;
+        return;
+      }
       event.returnValue = this.buildBoot();
     });
 
     ipcMain.on(INTERNAL.observation, (event, observation) => {
+      if (!this.authorizeNetdiskEvent(event)) {
+        return;
+      }
       const job = this.byContents.get(event.sender.id);
       if (job) job.handle(observation);
       else if (observation.kind === 'http') this.replyToOrphan(event, observation);
@@ -1589,13 +1755,14 @@ class JobManager {
       license: INIT_LICENSE,
       version: script.version,
     });
+    // Virtual RPC configuration: isolate real daemon token from webpage context
     this.store.setValue('setting_aria2_rpc', [
       {
-        domain: config.domain,
-        port: config.port,
-        path: config.path,
-        token: config.token,
-        dir: config.dir,
+        domain: 'http://127.0.0.1',
+        port: 6800,
+        path: '/jsonrpc',
+        token: '',
+        dir: '',
         default: true,
       },
     ]);
@@ -1912,16 +2079,17 @@ class JobManager {
    * >}
    */
   async deliver(files) {
+    const validatedFiles = files.map((file) => aria2.validateExtractedFile(file));
     const settings = this.store.getSettings();
 
     if (settings.delivery === 'clipboard') {
-      clipboard.writeText(files.map((file) => file.url).join('\r\n'));
-      return { delivery: 'clipboard', files };
+      clipboard.writeText(validatedFiles.map((file) => file.url).join('\r\n'));
+      return { delivery: 'clipboard', files: validatedFiles };
     }
 
     if (settings.delivery === 'browser') {
-      for (const file of files) await shell.openExternal(file.url);
-      return { delivery: 'browser', files };
+      for (const file of validatedFiles) await shell.openExternal(file.url);
+      return { delivery: 'browser', files: validatedFiles };
     }
 
     const status = this.aria2Status();
@@ -1937,10 +2105,10 @@ class JobManager {
 
     const config = this.aria2Config();
     const gids = [];
-    for (const file of files) {
+    for (const file of validatedFiles) {
       gids.push({ file, gid: await aria2.addUri(config, file) });
     }
-    return { delivery: 'aria2', files, gids, config };
+    return { delivery: 'aria2', files: validatedFiles, gids, config };
   }
 
   /**

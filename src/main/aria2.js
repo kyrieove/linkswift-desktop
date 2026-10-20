@@ -74,6 +74,62 @@ async function getVersion(config, timeoutMs) {
   return /** @type {{ version: string }} */ (result);
 }
 
+const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+const ILLEGAL_FILENAME_CHARS = /[<>:"/\\|?*\x00-\x1f\x7f]/;
+
+/**
+ * Validates that the extracted file has a safe http/https URL and a non-traversal single filename.
+ *
+ * @param {import('../shared/protocol').ExtractedFile} file
+ * @returns {import('../shared/protocol').ExtractedFile}
+ */
+function validateExtractedFile(file) {
+  if (!file || typeof file !== 'object') {
+    throw new Error('下载文件信息无效');
+  }
+
+  // 1. URL 校验
+  if (typeof file.url !== 'string' || !file.url.trim()) {
+    throw new Error('下载 URL 不能为空');
+  }
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(file.url.trim());
+  } catch {
+    throw new Error(`非法下载 URL 格式: ${file.url}`);
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error(`非法下载协议 (仅支持 http/https): ${parsedUrl.protocol}`);
+  }
+
+  // 2. 文件名校验
+  if (typeof file.name !== 'string' || !file.name.trim()) {
+    throw new Error('下载文件名不能为空');
+  }
+  const name = file.name;
+  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new Error(`非法文件名 (禁止路径遍历): ${name}`);
+  }
+  if (/^[a-zA-Z]:/.test(name)) {
+    throw new Error(`非法文件名 (禁止绝对盘符路径): ${name}`);
+  }
+  if (ILLEGAL_FILENAME_CHARS.test(name)) {
+    throw new Error(`非法文件名 (包含非法或控制字符): ${name}`);
+  }
+  if (WINDOWS_RESERVED_NAMES.test(name)) {
+    throw new Error(`非法文件名 (Windows 保留设备名): ${name}`);
+  }
+  if (/[ .]$/.test(name)) {
+    throw new Error(`非法文件名 (末尾不能有空格或句点): ${name}`);
+  }
+
+  return {
+    url: file.url.trim(),
+    name: file.name,
+    headers: file.headers || {},
+  };
+}
+
 /**
  * Builds the aria2 options object for a file download.
  *
@@ -81,9 +137,10 @@ async function getVersion(config, timeoutMs) {
  * @returns {Record<string, any>}
  */
 function buildAddUriOptions(file) {
-  const options = { out: file.name };
-  if (file.headers) {
-    for (const [name, value] of Object.entries(file.headers)) {
+  const safeFile = validateExtractedFile(file);
+  const options = { out: safeFile.name };
+  if (safeFile.headers) {
+    for (const [name, value] of Object.entries(safeFile.headers)) {
       const lower = name.toLowerCase();
       if (lower === 'user-agent') options['user-agent'] = value;
       if (lower === 'referer') options.referer = value;
@@ -94,9 +151,9 @@ function buildAddUriOptions(file) {
   // aria2 opens one connection per server by default, and quark throttles each
   // connection: measured 0.10 MiB/s with 1, 8.6 MiB/s with 16. Not for baidu,
   // which polices multi-connection downloads.
-  if (file.url) {
+  if (safeFile.url) {
     try {
-      const parsedUrl = new URL(file.url);
+      const parsedUrl = new URL(safeFile.url);
       if (
         parsedUrl.hostname.endsWith('.quark.cn') ||
         parsedUrl.hostname.endsWith('.baidu.com') ||
@@ -232,6 +289,7 @@ module.exports = {
   getVersion,
   addUri,
   endpoint,
+  validateExtractedFile,
   buildAddUriOptions,
   tellStatus,
   findGid,

@@ -127,7 +127,15 @@ async function main() {
     health: new ProviderHealthStore(userDataDir),
   });
   jobs.register(ipcMain);
-  registerIpc(ipcMain, jobs);
+  const isAuthorizedUi = (event) => {
+    if (!event || !event.sender || !uiWindow || uiWindow.isDestroyed()) return false;
+    if (event.sender.id !== uiWindow.webContents.id) return false;
+    if (event.senderFrame && event.senderFrame.parent !== null) return false;
+    const frameUrl = event.senderFrame?.url || '';
+    if (!frameUrl.includes('index.html')) return false;
+    return true;
+  };
+  registerIpc(ipcMain, jobs, { authorizeUiSender: isAuthorizedUi });
   jobs.restore();
   createUiWindow();
 }

@@ -92,6 +92,7 @@ async function run() {
     console.error('[linkswift] boot handshake failed', error);
     return;
   }
+  if (!payload || !payload.vendor) return;
 
   const report = (observation) => ipcRenderer.send(INTERNAL.observation, observation);
 

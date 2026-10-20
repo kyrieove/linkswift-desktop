@@ -25,6 +25,9 @@
     "check:runner": "node tools/check-runner.js",
     "check:negative": "node tools/probe/neg-run-checks.js",
     "check:brand": "node tools/check-brand.js",
+    "check:download-security": "node tools/check-download-security.js",
+    "check:proxy-security": "node tools/check-proxy-security.js",
+    "check:ipc-security": "electron tools/check-ipc-security.js",
     "brand": "electron tools/generate-brand.js"
   },
   "dependencies": {
