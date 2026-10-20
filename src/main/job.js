@@ -203,6 +203,7 @@ function extractFromAria2Body(body) {
   /** @type {Record<string, string>} */
   const headers = {};
   for (const line of headerLines) {
+    if (typeof line !== 'string') continue;
     const separator = line.indexOf(':');
     if (separator > 0) headers[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
   }
@@ -229,27 +230,82 @@ function extractFromAria2Body(body) {
 
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024; // 32 MiB
 
-function isPrivateIp(ip) {
-  if (!ip || typeof ip !== 'string') return true;
-  // IPv4 loopback (127.0.0.0/8)
-  if (/^127\./.test(ip)) return true;
-  // IPv4 private (10.0.0.0/8)
-  if (/^10\./.test(ip)) return true;
-  // IPv4 private (172.16.0.0/12)
-  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip)) return true;
-  // IPv4 private (192.168.0.0/16)
-  if (/^192\.168\./.test(ip)) return true;
-  // IPv4 link-local (169.254.0.0/16, including 169.254.169.254)
-  if (/^169\.254\./.test(ip)) return true;
-  // Broadcast / current / reserved
-  if (/^0\./.test(ip) || ip === '255.255.255.255') return true;
-  // IPv6 loopback (::1), unspecified (::)
-  if (ip === '::1' || ip === '::') return true;
-  // IPv6 unique local (fc00::/7)
-  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;
-  // IPv6 link-local (fe80::/10)
-  if (/^fe[89ab][0-9a-f]:/i.test(ip)) return true;
+function parseIpv4(ip) {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let num = 0;
+  for (let i = 0; i < 4; i++) {
+    const n = Number(parts[i]);
+    if (!Number.isInteger(n) || n < 0 || n > 255 || (parts[i].length > 1 && parts[i].startsWith('0'))) {
+      return null;
+    }
+    num = (num << 8) | n;
+  }
+  return num >>> 0;
+}
+
+function isPrivateIpv4(ip) {
+  const num = parseIpv4(ip);
+  if (num === null) return true;
+  if ((num >>> 24) === 0) return true; // 0.0.0.0/8 (Current network)
+  if ((num >>> 24) === 10) return true; // 10.0.0.0/8 (Private-use)
+  if ((num >>> 22) === 401) return true; // 100.64.0.0/10 (Shared Address Space / CGNAT)
+  if ((num >>> 24) === 127) return true; // 127.0.0.0/8 (Loopback)
+  if ((num >>> 16) === ((169 << 8) | 254)) return true; // 169.254.0.0/16 (Link-Local)
+  if ((num >>> 20) === ((172 << 4) | 1)) return true; // 172.16.0.0/12 (Private-use)
+  if ((num >>> 16) === ((192 << 8) | 168)) return true; // 192.168.0.0/16 (Private-use)
+  if ((num >>> 17) === 25353) return true; // 198.18.0.0/15 (Benchmarking)
+  if ((num >>> 28) === 14) return true; // 224.0.0.0/4 (Multicast)
+  if ((num >>> 28) === 15) return true; // 240.0.0.0/4 (Reserved / Broadcast)
   return false;
+}
+
+function isAllowedPublicIp(ip) {
+  if (!ip || typeof ip !== 'string') return false;
+  const trimmed = ip.trim().toLowerCase();
+
+  // IPv4 check
+  if (net.isIPv4(trimmed)) {
+    return !isPrivateIpv4(trimmed);
+  }
+
+  // IPv6 check
+  if (net.isIPv6(trimmed)) {
+    // IPv4-mapped IPv6 (::ffff:0:0/96, e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+    if (trimmed.startsWith('::ffff:')) {
+      const rest = trimmed.slice(7);
+      if (net.isIPv4(rest)) {
+        return !isPrivateIpv4(rest);
+      }
+      const parts = rest.split(':');
+      if (parts.length === 2) {
+        const p1 = parseInt(parts[0], 16);
+        const p2 = parseInt(parts[1], 16);
+        if (!Number.isNaN(p1) && !Number.isNaN(p2)) {
+          const ipv4Str = `${(p1 >> 8) & 0xff}.${p1 & 0xff}.${(p2 >> 8) & 0xff}.${p2 & 0xff}`;
+          if (net.isIPv4(ipv4Str)) {
+            return !isPrivateIpv4(ipv4Str);
+          }
+        }
+      }
+      return false;
+    }
+
+    if (trimmed === '::1' || trimmed === '::') return false; // Loopback / unspecified
+    if (/^f[cd][0-9a-f]{2}:/i.test(trimmed)) return false; // Unique local (fc00::/7)
+    if (/^fe[89ab][0-9a-f]:/i.test(trimmed)) return false; // Link-local (fe80::/10)
+    if (/^ff[0-9a-f]{2}:/i.test(trimmed)) return false; // Multicast (ff00::/8)
+    if (/^2001:0?db8:/i.test(trimmed)) return false; // Documentation (2001:db8::/32)
+    if (/^100::/i.test(trimmed)) return false; // Discard prefix (100::/64)
+
+    return true;
+  }
+
+  return false;
+}
+
+function isPrivateIp(ip) {
+  return !isAllowedPublicIp(ip);
 }
 
 async function validateProxyTargetUrl(targetUrl, allowLocalFixture) {
@@ -266,11 +322,16 @@ async function validateProxyTargetUrl(targetUrl, allowLocalFixture) {
     throw new Error('禁止访问 localhost 目标 (SSRF 防御)');
   }
 
-  if (net.isIP(hostname)) {
-    if (isPrivateIp(hostname)) {
+  let cleanHost = hostname;
+  if (cleanHost.startsWith('[') && cleanHost.endsWith(']')) {
+    cleanHost = cleanHost.slice(1, -1);
+  }
+
+  if (net.isIP(cleanHost)) {
+    if (!isAllowedPublicIp(cleanHost)) {
       throw new Error(`禁止访问私有或本地网络目标 (SSRF 防御): ${hostname}`);
     }
-    return hostname;
+    return cleanHost;
   }
 
   let addresses;
@@ -285,7 +346,7 @@ async function validateProxyTargetUrl(targetUrl, allowLocalFixture) {
   }
 
   for (const addr of addresses) {
-    if (isPrivateIp(addr.address)) {
+    if (!isAllowedPublicIp(addr.address)) {
       throw new Error(`禁止访问私有或本地网络目标 (SSRF 防御): ${hostname} -> ${addr.address}`);
     }
   }
@@ -422,15 +483,61 @@ function parseSetCookie(headerStr, currentUrl) {
   return details;
 }
 
+function hostMatchesPattern(hostname, pattern) {
+  const normHost = hostname.toLowerCase();
+  const normPat = pattern.toLowerCase();
+  if (normPat.startsWith('*.')) {
+    const root = normPat.slice(2);
+    return normHost === root || normHost.endsWith('.' + root);
+  }
+  return normHost === normPat || normHost.endsWith('.' + normPat);
+}
+
+function validateProviderPolicy(targetUrl, providerId, allowLocalFixture) {
+  if (allowLocalFixture && (targetUrl.hostname === '127.0.0.1' || targetUrl.hostname === 'localhost')) {
+    return { attachCookies: true };
+  }
+  if (!providerId) {
+    return { attachCookies: false };
+  }
+  const provider = getProvider(providerId);
+  if (!provider) {
+    throw new Error(`未知网盘 provider: ${providerId}`);
+  }
+
+  const hostname = targetUrl.hostname.toLowerCase();
+
+  // Check if target matches another known provider's authenticated hosts
+  for (const [otherId, otherProv] of Object.entries(PROVIDERS)) {
+    if (otherId === provider.id) continue;
+    const matchesOther = (otherProv.authenticatedHosts || []).some((h) => hostMatchesPattern(hostname, h));
+    if (matchesOther) {
+      throw new Error(`禁止跨网盘访问: 目标 ${hostname} 属于 ${otherProv.label}，非当前网盘 (${provider.label})`);
+    }
+  }
+
+  const authHosts = provider.authenticatedHosts || [];
+  const extraHosts = provider.extraRequestHosts || [];
+
+  const isAuth = authHosts.some((h) => hostMatchesPattern(hostname, h));
+  const isExtra = extraHosts.some((h) => hostMatchesPattern(hostname, h));
+
+  if (!isAuth && !isExtra) {
+    throw new Error(`目标域名不在当前网盘 (${provider.label}) 允许范围内: ${hostname}`);
+  }
+
+  return { attachCookies: isAuth };
+}
+
 /**
  * Node's fetch refuses to send forbidden header names such as Referer and
  * Origin, and the netdisk APIs need both. Use the raw HTTP client instead.
  *
- * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null, allowLocalFixture?: boolean }} request
+ * @param {{ url: string, method: string, headers: Record<string, string>, body: string | null, provider?: string, allowLocalFixture?: boolean }} request
  * @param {import('electron').Session} [ses]
  * @returns {Promise<{ ok: boolean, status: number, statusText: string, text: string, headers: string, finalUrl: string }>}
  */
-async function proxyRequest({ url, method, headers, body, allowLocalFixture = false }, ses) {
+async function proxyRequest({ url, method, headers, body, provider, allowLocalFixture = false }, ses) {
   const MAX_HOPS = 10;
   let currentUrl = new URL(url);
   let currentMethod = method;
@@ -448,10 +555,11 @@ async function proxyRequest({ url, method, headers, body, allowLocalFixture = fa
   }
 
   for (let hopCount = 0; hopCount < MAX_HOPS; hopCount++) {
+    const policy = validateProviderPolicy(currentUrl, provider, allowLocalFixture);
     const pinnedIp = await validateProxyTargetUrl(currentUrl, allowLocalFixture);
     const hopHeaders = { ...currentHeaders };
 
-    if (ses) {
+    if (ses && policy.attachCookies) {
       for (const key of Object.keys(hopHeaders)) {
         if (key.toLowerCase() === 'cookie') {
           delete hopHeaders[key];
@@ -516,6 +624,8 @@ async function proxyRequest({ url, method, headers, body, allowLocalFixture = fa
     if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
       const locStr = Array.isArray(location) ? location[0] : location;
       const next = new URL(locStr, currentUrl);
+
+      validateProviderPolicy(next, provider, allowLocalFixture);
 
       if (next.origin !== currentUrl.origin) {
         callerCookie = null;
@@ -1018,7 +1128,10 @@ class Job {
         return;
 
       case 'http':
-        this.handleHttp(observation);
+        this.handleHttp(observation).catch((err) => {
+          console.error(`[job ${this.id}] handleHttp error:`, err);
+          this.fail('http-error', err.message);
+        });
         return;
 
       case 'script-error':
@@ -1182,7 +1295,26 @@ class Job {
    * @param {any} observation
    */
   async handleHttp(observation) {
-    const files = extractFromAria2Body(observation.body);
+    let files = null;
+    try {
+      files = extractFromAria2Body(observation.body);
+    } catch (err) {
+      this.reply(observation.id, {
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: JSON.stringify({
+          id: observation.id,
+          jsonrpc: '2.0',
+          error: { code: -32602, message: err.message },
+        }),
+        headers: '',
+        error: err.message,
+      });
+      this.fail('invalid-download-file', err.message);
+      return;
+    }
+
     if (files) {
       // The app owns delivery, so answer as if aria2 took the job. The script
       // only checks that the RPC reply has a result.
@@ -1204,6 +1336,7 @@ class Job {
           method: observation.method,
           headers: observation.headers ?? {},
           body: observation.body,
+          provider: this.link?.provider,
         },
         this.session,
       );
@@ -1687,33 +1820,36 @@ class JobManager {
     if (!event || !event.sender) return false;
     const job = this.byContents.get(event.sender.id);
     if (!job) return false;
-    if (job.window && !job.window.isDestroyed() && event.sender !== job.window.webContents) {
+    if (!job.window || (typeof job.window.isDestroyed === 'function' && job.window.isDestroyed())) {
       return false;
     }
-    if (event.senderFrame && event.senderFrame.parent !== null) {
+    if (job.window.webContents && event.sender !== job.window.webContents) {
       return false;
     }
-    if (event.senderFrame && event.senderFrame.url) {
-      try {
-        const parsed = new URL(event.senderFrame.url);
-        if (parsed.protocol !== 'https:') return false;
-        const provider = getProvider(job.link.provider);
-        if (provider && !provider.matches(parsed)) return false;
-      } catch {
-        return false;
-      }
+    if (!event.senderFrame || event.senderFrame.parent !== null || !event.senderFrame.url) {
+      return false;
+    }
+    try {
+      const parsed = new URL(event.senderFrame.url);
+      if (parsed.protocol !== 'https:') return false;
+      const provider = getProvider(job.link?.provider);
+      if (!provider || !provider.matches(parsed)) return false;
+    } catch {
+      return false;
     }
     return true;
   }
 
   /** @param {import('electron').IpcMain} ipcMain */
   register(ipcMain) {
-    ipcMain.on(INTERNAL.boot, (event) => {
+    ipcMain.on(INTERNAL.boot, (event, arg) => {
       if (!this.authorizeNetdiskEvent(event)) {
         event.returnValue = null;
         return;
       }
-      event.returnValue = this.buildBoot();
+      const job = this.byContents.get(event.sender.id);
+      const providerId = job?.link?.provider || arg?.providerId;
+      event.returnValue = this.buildBoot(providerId);
     });
 
     ipcMain.on(INTERNAL.observation, (event, observation) => {
@@ -1744,7 +1880,7 @@ class JobManager {
     return this.daemon.status();
   }
 
-  buildBoot() {
+  buildBoot(providerId) {
     const script = this.userscript.get();
     const config = this.aria2Config();
 
@@ -1767,8 +1903,10 @@ class JobManager {
       },
     ]);
 
+    const values = this.store.getScopedValues(providerId);
+
     return {
-      values: JSON.parse(JSON.stringify(this.store.values)),
+      values,
       resources: this.resources,
       vendor: this.vendor,
       userscript: script.source,

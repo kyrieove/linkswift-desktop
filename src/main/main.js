@@ -1,7 +1,8 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, session, shell } = require('electron');
 const path = require('node:path');
+const url = require('node:url');
 
 const { PUSH } = require('../shared/protocol');
 const { Store } = require('./store');
@@ -12,6 +13,7 @@ const { TaskStore } = require('./task-store');
 const { ProviderHealthStore } = require('./provider-health');
 const { loadVendor } = require('./vendor');
 const { registerIpc } = require('./ipc');
+const { authorizeUiEvent } = require('./ipc-auth');
 
 /**
  * One persistent partition holds every netdisk login. Electron puts it under
@@ -63,6 +65,23 @@ function createUiWindow() {
   uiWindow.on('closed', () => {
     uiWindow = null;
   });
+
+  // Strict navigation security policies for UI window
+  uiWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault();
+  });
+  uiWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    try {
+      const parsed = new URL(targetUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        shell.openExternal(targetUrl).catch(() => {});
+      }
+    } catch {
+      // ignore invalid URLs
+    }
+    return { action: 'deny' };
+  });
+
   uiWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 }
 
@@ -127,14 +146,9 @@ async function main() {
     health: new ProviderHealthStore(userDataDir),
   });
   jobs.register(ipcMain);
-  const isAuthorizedUi = (event) => {
-    if (!event || !event.sender || !uiWindow || uiWindow.isDestroyed()) return false;
-    if (event.sender.id !== uiWindow.webContents.id) return false;
-    if (event.senderFrame && event.senderFrame.parent !== null) return false;
-    const frameUrl = event.senderFrame?.url || '';
-    if (!frameUrl.includes('index.html')) return false;
-    return true;
-  };
+  const uiFilePath = path.join(__dirname, '..', 'renderer', 'index.html');
+  const uiFileUrl = url.pathToFileURL(uiFilePath).href;
+  const isAuthorizedUi = (event) => authorizeUiEvent(event, uiWindow?.webContents, uiFileUrl);
   registerIpc(ipcMain, jobs, { authorizeUiSender: isAuthorizedUi });
   jobs.restore();
   createUiWindow();

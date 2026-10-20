@@ -36,6 +36,8 @@
  * @property {'cookie' | 'window'} [loginKind]  How this provider authenticates
  * @property {string} [loginUrl]  Where a window-login provider signs in
  * @property {boolean} [experimental]  A driver miss degrades to a manual window
+ * @property {string[]} [authenticatedHosts]  Hosts that receive session cookies for this provider
+ * @property {string[]} [extraRequestHosts]   Additional allowed hosts without session cookies
  */
 
 /**
@@ -221,6 +223,14 @@ const PROVIDERS = {
     passcodeParam: null,
     loginKind: 'cookie',
     driveUrl: 'https://pan.quark.cn/list',
+    authenticatedHosts: [
+      'pan.quark.cn',
+      'quark.cn',
+      'drive.quark.cn',
+      'drive-pc.quark.cn',
+      'drive-social-api.quark.cn',
+    ],
+    extraRequestHosts: [],
     steps: QUARK_STEPS,
   },
   baidu: {
@@ -235,6 +245,14 @@ const PROVIDERS = {
     passcodeParam: 'pwd',
     loginKind: 'cookie',
     driveUrl: 'https://pan.baidu.com/disk/main#/index?category=all',
+    authenticatedHosts: [
+      'pan.baidu.com',
+      'baidu.com',
+      'passport.baidu.com',
+      'openapi.baidu.com',
+      'pcs.baidu.com',
+    ],
+    extraRequestHosts: [],
     transferSteps: BAIDU_TRANSFER_STEPS,
     steps: BAIDU_STEPS,
   },
@@ -250,6 +268,12 @@ const PROVIDERS = {
     // Selectors are transcribed from the script's own mount table; no live share
     // page has been driven yet, so a miss falls back to the manual window.
     experimental: true,
+    authenticatedHosts: [
+      'drive.uc.cn',
+      'uc.cn',
+      'pc-api.uc.cn',
+    ],
+    extraRequestHosts: [],
     steps: UC_STEPS,
   },
   xunlei: {
@@ -266,6 +290,13 @@ const PROVIDERS = {
     driveUrl: 'https://pan.xunlei.com/',
     // Its share page cannot produce a direct link, so every job is a transfer.
     transferOnly: true,
+    authenticatedHosts: [
+      'pan.xunlei.com',
+      'xunlei.com',
+      'api-pan.xunlei.com',
+      'xluser-ssl.xunlei.com',
+    ],
+    extraRequestHosts: [],
     transferSteps: XUNLEI_TRANSFER_STEPS,
     experimental: true,
     steps: XUNLEI_STEPS,

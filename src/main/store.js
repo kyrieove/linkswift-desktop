@@ -37,6 +37,44 @@ const DEFAULT_SETTINGS = {
 const ARCHIVE_LIMIT_MIN = 100;
 const ARCHIVE_LIMIT_MAX = 2000;
 
+/** Explicit allowlist of non-sensitive global configuration keys */
+const GLOBAL_SETTING_KEYS = new Set([
+  'setting_init',
+  'setting_aria2_rpc',
+  'setting_idm_rpc',
+  'setting_config_version',
+  'setting_curl_terminal',
+  'setting_bitcomet_rpc',
+  'setting_abdm_rpc',
+  'setting_ui_theme',
+]);
+
+const KNOWN_PROVIDERS = ['baidu', 'quark', 'uc', 'xunlei'];
+
+function isGlobalKey(key) {
+  if (GLOBAL_SETTING_KEYS.has(key)) return true;
+  if (key.startsWith('setting_') || key.startsWith('config.')) {
+    for (const p of KNOWN_PROVIDERS) {
+      if (key.toLowerCase().includes(p)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+function isProviderKey(key, providerId) {
+  if (!providerId) return false;
+  const p = providerId.toLowerCase();
+  const lower = key.toLowerCase();
+  return (
+    lower.startsWith(`${p}_`) ||
+    lower.startsWith(`${p}:`) ||
+    lower.startsWith(`${p}.`) ||
+    lower.includes(`_${p}_`) ||
+    lower.startsWith(`theme_${p}`)
+  );
+}
+
 /** @param {unknown} value */
 function clampArchiveLimit(value) {
   const number = Number(value);
@@ -120,6 +158,27 @@ class Store {
   /** @param {string} key */
   getValue(key) {
     return this.values[key];
+  }
+
+  /**
+   * Return a snapshot of GM values strictly scoped to the specified provider.
+   *
+   * Only non-sensitive global settings and provider-specific keys are returned.
+   * Credentials from other providers are never exposed.
+   *
+   * @param {string} [providerId]
+   * @returns {Record<string, unknown>}
+   */
+  getScopedValues(providerId) {
+    const scoped = {};
+    for (const [key, value] of Object.entries(this.values)) {
+      if (isGlobalKey(key)) {
+        scoped[key] = value;
+      } else if (providerId && isProviderKey(key, providerId)) {
+        scoped[key] = value;
+      }
+    }
+    return JSON.parse(JSON.stringify(scoped));
   }
 
   /**

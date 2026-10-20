@@ -306,6 +306,54 @@ async function main() {
     assert(result.message.includes('缓存版本'), `拉不到新脚本要说明：${result.message}`);
     assert(created.some((entry) => String(entry.detail).includes('缓存版本')), '任务上也要留下这句说明');
   }
+
+  // 12. [F-011] 非法文件名或结构异常的 observation 不引发 unhandledRejection
+  {
+    const { job } = makeJob();
+    let repliedPayload = null;
+    job.reply = (id, payload) => {
+      repliedPayload = payload;
+    };
+
+    const badObservation = {
+      kind: 'http',
+      id: 'bad-1',
+      url: 'http://localhost:6800/jsonrpc',
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'bad-1',
+        method: 'aria2.addUri',
+        params: [
+          ['https://d.pcs.baidu.com/file/bad?token=x'],
+          {
+            out: '../../escape.txt',
+            header: ['User-Agent: pan.baidu.com', 12345, null],
+          },
+        ],
+      }),
+    };
+
+    let unhandled = false;
+    let unhandledErr = null;
+    const onUnhandled = (err) => {
+      unhandled = true;
+      unhandledErr = err;
+    };
+    process.once('unhandledRejection', onUnhandled);
+
+    job.handle(badObservation);
+
+    await new Promise((r) => setTimeout(r, 50));
+    process.removeListener('unhandledRejection', onUnhandled);
+
+    assert.strictEqual(unhandled, false, `不应产生未捕获的 Promise rejection: ${unhandledErr?.message}`);
+    assert.strictEqual(job.state.phase, 'failed', '任务应进入 failed 阶段');
+    assert.strictEqual(job.state.code, 'invalid-download-file', '错误码应为 invalid-download-file');
+    assert.ok(repliedPayload, '应当给网页回复错误信息');
+    assert.strictEqual(repliedPayload.ok, false, '回复 ok 应为 false');
+  }
 }
 
 /**

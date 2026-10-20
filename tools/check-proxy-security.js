@@ -15,18 +15,27 @@ async function main() {
     'http://172.16.0.1/secret',
     'http://192.168.1.1/router',
     'http://169.254.169.254/latest/meta-data',
+    'http://100.64.0.1/shared',
+    'http://198.18.0.1/bench',
+    'http://224.0.0.1/multicast',
+    'http://240.0.0.1/reserved',
+    'http://[::ffff:127.0.0.1]/mapped-loopback',
     'file:///etc/passwd',
     'ftp://example.com/file',
   ];
 
   for (const url of ssrfTargets) {
-    let rejected = false;
+    let ssrfBlocked = false;
+    let errMsg = '';
     try {
       await proxyRequest({ url, method: 'GET', headers: {}, body: null });
     } catch (err) {
-      rejected = true;
+      errMsg = err.message;
+      if (err.message.includes('SSRF 防御') || err.message.includes('非 http/https')) {
+        ssrfBlocked = true;
+      }
     }
-    assert.strictEqual(rejected, true, `SSRF target must be rejected: ${url}`);
+    assert.strictEqual(ssrfBlocked, true, `SSRF target must be blocked before connection: ${url} (got: ${errMsg})`);
   }
 
   // 2. Cross-origin redirect credential stripping
@@ -122,6 +131,51 @@ async function main() {
     assert.strictEqual(bigRejected, true, 'Oversized (>32 MiB) response must be rejected');
   } finally {
     bigServer.close();
+  }
+
+  // 4. [F-001] Cross-provider domain isolation & session cookie isolation
+  // 4.1 Request from quark provider to baidu.com must be rejected before network call
+  let crossProviderBlocked = false;
+  try {
+    await proxyRequest({
+      url: 'https://pan.baidu.com/api/list',
+      method: 'GET',
+      headers: {},
+      body: null,
+      provider: 'quark',
+    });
+  } catch (err) {
+    if (err.message.includes('不在当前网盘') || err.message.includes('provider') || err.message.includes('跨网盘') || err.message.includes('非当前网盘')) {
+      crossProviderBlocked = true;
+    }
+  }
+  assert.strictEqual(crossProviderBlocked, true, 'Quark job must not be allowed to request baidu.com');
+
+  // 4.2 Redirect from allowed fixture to another provider must be rejected
+  const crossRedirectServer = http.createServer((req, res) => {
+    res.writeHead(302, { Location: 'https://pan.baidu.com/stolen' });
+    res.end();
+  });
+  await new Promise((r) => crossRedirectServer.listen(0, '127.0.0.1', r));
+  const crossPort = crossRedirectServer.address().port;
+  try {
+    let redirectBlocked = false;
+    try {
+      await proxyRequest({
+        url: `http://127.0.0.1:${crossPort}/entry`,
+        method: 'GET',
+        headers: {},
+        body: null,
+        provider: 'quark',
+        allowLocalFixture: true,
+      });
+    } catch (err) {
+      redirectBlocked = true;
+      assert.ok(err.message.includes('不在当前网盘') || err.message.includes('provider') || err.message.includes('跨网盘') || err.message.includes('非当前网盘'));
+    }
+    assert.strictEqual(redirectBlocked, true, 'Cross-provider redirect must be rejected');
+  } finally {
+    crossRedirectServer.close();
   }
 
   console.log('check:proxy-security OK');
