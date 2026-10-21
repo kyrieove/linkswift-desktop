@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld('linkswift', {
   testAria2: (config) => ipcRenderer.invoke(INVOKE.testAria2, config),
   aria2Status: () => ipcRenderer.invoke(INVOKE.aria2Status),
   restartAria2: () => ipcRenderer.invoke(INVOKE.restartAria2),
-  openDownloadDir: () => ipcRenderer.invoke(INVOKE.openDownloadDir),
+  openDownloadDir: (jobId) => ipcRenderer.invoke(INVOKE.openDownloadDir, jobId),
   chooseDirectory: () => ipcRenderer.invoke(INVOKE.chooseDirectory),
   archiveJobs: (ids) => ipcRenderer.invoke(INVOKE.archiveJobs, ids),
   unarchiveJobs: (ids) => ipcRenderer.invoke(INVOKE.unarchiveJobs, ids),

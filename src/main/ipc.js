@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { dialog, shell } = require('electron');
 const { INVOKE } = require('../shared/protocol');
 const aria2 = require('./aria2');
@@ -75,9 +77,24 @@ function registerIpc(bus, manager, options = {}) {
     }
   });
 
-  checkedHandle(INVOKE.openDownloadDir, async () => {
+  checkedHandle(INVOKE.openDownloadDir, async (_event, jobId) => {
     const settings = manager.store.getSettings();
     const dir = settings.aria2.dir?.trim() || manager.daemon.defaultDir();
+    if (jobId) {
+      const job = manager.jobs.get(String(jobId)) || manager.tasks.all().find((t) => t.id === String(jobId));
+      const files = job?.state?.files ?? job?.files;
+      if (Array.isArray(files) && files.length > 0 && files[0]?.name) {
+        const filePath = path.join(dir, files[0].name);
+        try {
+          if (fs.existsSync(filePath)) {
+            shell.showItemInFolder(filePath);
+            return null;
+          }
+        } catch {
+          // ignore fs errors and fall back to openPath
+        }
+      }
+    }
     const error = await shell.openPath(dir);
     return error || null;
   });

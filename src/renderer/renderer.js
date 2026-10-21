@@ -789,6 +789,16 @@
         actions.append(btn('重新取链 ' + name, 'refresh', (e) => { e.stopPropagation(); actJob(j.id, 'retry'); }));
       } else if (phase === 'needs-human') {
         actions.append(btn(humanInfo(j).action + ' ' + name, 'open', (e) => { e.stopPropagation(); actJob(j.id, 'human'); }));
+      } else if (phase === 'done') {
+        actions.append(btn('打开 ' + name + ' 所在目录', 'folder', async (e) => {
+          e.stopPropagation();
+          try {
+            const err = await api.openDownloadDir(j.id);
+            if (err) notify('打不开下载目录：' + err);
+          } catch (err) {
+            notify('打不开下载目录：' + describeError(err));
+          }
+        }));
       }
 
       actions.append(btn('查看 ' + name + ' 的详情', 'more', (e) => { e.stopPropagation(); openDetails(j.id); }));
@@ -1026,7 +1036,25 @@
     ];
       for (const [k, v] of items) {
         const kv = el('div', 'detailkv');
-        kv.append(el('span', '', k), el('span', '', v));
+        if (k === '保存位置') {
+          const val = el('span');
+          val.style.cursor = 'pointer';
+          val.title = '点击打开此目录';
+          val.append(document.createTextNode(v + ' '), icon('open'));
+          const openSvg = val.querySelector('svg');
+          if (openSvg) openSvg.style.cssText = 'width:11px;height:11px;vertical-align:middle;margin-left:4px';
+          val.onclick = async () => {
+            try {
+              const err = await api.openDownloadDir(j.id);
+              if (err) notify('打不开下载目录：' + err);
+            } catch (err) {
+              notify('打不开下载目录：' + describeError(err));
+            }
+          };
+          kv.append(el('span', '', k), val);
+        } else {
+          kv.append(el('span', '', k), el('span', '', v));
+        }
         drawer.append(kv);
       }
 
@@ -1073,6 +1101,15 @@
         tools.append(btn('暂停下载', 'pause', () => actJob(j.id, 'pause'), 'button secondary small'));
       } else if (phase === 'paused') {
         tools.append(btn('继续下载', 'play', () => actJob(j.id, 'resume'), 'button secondary small'));
+      } else if (phase === 'done') {
+        tools.append(btn('打开保存目录', 'folder', async () => {
+          try {
+            const err = await api.openDownloadDir(j.id);
+            if (err) notify('打不开下载目录：' + err);
+          } catch (err) {
+            notify('打不开下载目录：' + describeError(err));
+          }
+        }, 'button secondary small'));
       } else if (phase === 'failed') {
         tools.append(btn('重新获取直链', 'refresh', () => actJob(j.id, 'retry'), 'button secondary small'));
         tools.append(btn('复制诊断', 'copy', async () => {
@@ -1473,7 +1510,7 @@
         const input = $('#link-input') || $('#share');
         if (input) input.value = '';
         const dialog = $('#create-dialog');
-        if (dialog) dialog.close();
+        if (dialog && dialog.open) dialog.close();
         const parts = [];
         if (created) parts.push(`新建 ${created} 个任务`);
         if (duplicates) parts.push(`${duplicates} 条已在处理中`);
@@ -1691,6 +1728,18 @@
     }
 
     // Batch buttons
+    const openDoneDirBtn = $('#open-done-dir');
+    if (openDoneDirBtn) {
+      openDoneDirBtn.addEventListener('click', async () => {
+        try {
+          const err = await api.openDownloadDir();
+          if (err) notify('打不开下载目录：' + err);
+        } catch (err) {
+          notify('打不开下载目录：' + describeError(err));
+        }
+      });
+    }
+
     const batchPauseBtn = $('#batch-pause');
     if (batchPauseBtn) batchPauseBtn.addEventListener('click', batchPause);
 
@@ -1764,13 +1813,13 @@
     const aboutBtn = $('#about');
     if (aboutBtn) aboutBtn.addEventListener('click', () => { const d = $('#info-dialog'); if (d) d.showModal(); });
     const closeInfoBtn = $('#close-info');
-    if (closeInfoBtn) closeInfoBtn.addEventListener('click', () => { const d = $('#info-dialog'); if (d) d.close(); });
+    if (closeInfoBtn) closeInfoBtn.addEventListener('click', () => { const d = $('#info-dialog'); if (d && d.open) d.close(); });
 
     // Create dialog
     const closeCreateBtn = $('#close-create');
-    if (closeCreateBtn) closeCreateBtn.addEventListener('click', () => { const d = $('#create-dialog'); if (d) d.close(); });
+    if (closeCreateBtn) closeCreateBtn.addEventListener('click', () => { const d = $('#create-dialog'); if (d && d.open) d.close(); });
     const cancelCreateBtn = $('#cancel-create');
-    if (cancelCreateBtn) cancelCreateBtn.addEventListener('click', () => { const d = $('#create-dialog'); if (d) d.close(); });
+    if (cancelCreateBtn) cancelCreateBtn.addEventListener('click', () => { const d = $('#create-dialog'); if (d && d.open) d.close(); });
 
     const pasteBtn = $('#paste');
     if (pasteBtn) {

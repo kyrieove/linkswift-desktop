@@ -409,7 +409,13 @@ function hop(options, body, pinnedIp) {
 
     if (pinnedIp) {
       requestOptions.lookup = (hostname, opts, cb) => {
-        cb(null, pinnedIp, pinnedIp.includes(':') ? 6 : 4);
+        const callback = typeof opts === 'function' ? opts : cb;
+        const family = pinnedIp.includes(':') ? 6 : 4;
+        if (opts && typeof opts === 'object' && opts.all) {
+          callback(null, [{ address: pinnedIp, family }]);
+        } else {
+          callback(null, pinnedIp, family);
+        }
       };
     }
 
@@ -2296,4 +2302,4 @@ class JobManager {
   }
 }
 
-module.exports = { JobManager, Job, extractFromAria2Body, proxyRequest };
+module.exports = { JobManager, Job, extractFromAria2Body, proxyRequest, hop };

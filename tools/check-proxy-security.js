@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
-const { proxyRequest } = require('../src/main/job');
+const { proxyRequest, hop } = require('../src/main/job');
 
 console.log('=== Running check: check:proxy-security ===');
 
@@ -180,6 +180,29 @@ async function main() {
     assert.strictEqual(redirectBlocked, true, 'Cross-provider redirect must be rejected');
   } finally {
     crossRedirectServer.close();
+  }
+
+  // 5. [F-001 regression check] Pinned IP lookup must support Node 20+ autoSelectFamily (opts.all)
+  const pinTestServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('pinned ok');
+  });
+  await new Promise((r) => pinTestServer.listen(0, '127.0.0.1', r));
+  const pinTestPort = pinTestServer.address().port;
+  try {
+    const hopRes = await hop(
+      {
+        url: `http://localhost:${pinTestPort}/test`,
+        method: 'GET',
+        headers: {},
+      },
+      null,
+      '127.0.0.1'
+    );
+    assert.strictEqual(hopRes.statusCode, 200);
+    assert.strictEqual(hopRes.buffer.toString(), 'pinned ok');
+  } finally {
+    pinTestServer.close();
   }
 
   console.log('check:proxy-security OK');
