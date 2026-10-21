@@ -654,16 +654,20 @@
           return;
         }
         const res = await api.purgeJobs(purgeable);
-        if (res && res.removed) {
-          for (const id of purgeable) {
-            purgedIds.add(id);
-            jobs.delete(id);
-            const idx = jobOrder.indexOf(id);
-            if (idx !== -1) jobOrder.splice(idx, 1);
-          }
-          notify(`已删除 ${res.removed} 个任务记录`);
+        const persistedRemoved = (res && typeof res.removed === 'number') ? res.removed : 0;
+        const totalPurgeable = purgeable.length;
+        for (const id of purgeable) {
+          purgedIds.add(id);
+          jobs.delete(id);
+          const idx = jobOrder.indexOf(id);
+          if (idx !== -1) jobOrder.splice(idx, 1);
+        }
+        if (persistedRemoved === totalPurgeable) {
+          notify(`已删除 ${persistedRemoved} 个任务记录`);
+        } else if (persistedRemoved === 0) {
+          notify(`已从列表移除 ${totalPurgeable} 个任务`);
         } else {
-          notify('勾选的任务里没有可删除的');
+          notify(`已删除 ${persistedRemoved} 个持久化记录，并从列表移除 ${totalPurgeable - persistedRemoved} 个临时任务`);
         }
       }
       viewState.selectedIds.clear();

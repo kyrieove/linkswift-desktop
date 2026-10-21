@@ -739,6 +739,7 @@ async function run(state) {
     report.stalled = await assertStalled(read, win);
     report.diagnostic = await assertDiagnostic(read, win);
     report.batch = await assertBatchActions(read, win);
+    report.purgeUnpersisted = await assertPurgeUnpersistedFailure(read, win, tasks);
     report.emptyStates = await assertEmptyStates(read, win);
     report.providerHealth = await assertProviderHealth(read, win);
     report.assertionsPassed +=
@@ -746,6 +747,7 @@ async function run(state) {
       report.stalled.passed +
       report.diagnostic.passed +
       report.batch.passed +
+      report.purgeUnpersisted.passed +
       report.emptyStates.passed +
       report.providerHealth.passed;
 
@@ -977,6 +979,159 @@ async function assertBatchActions(read) {
     'The batch bar must go away when nothing is selected'
   );
   return { passed: 5, bar };
+}
+
+/** F-112 regression: purge unpersisted failure jobs and verify feedback, UI removal, and active-job protection */
+async function assertPurgeUnpersistedFailure(read, win, tasks) {
+  let passed = 0;
+
+  // 1. Unpersisted failed job (no files, phase: failed)
+  const unpersistedJob = {
+    id: 'fixture-unpersisted-failed',
+    createdAt: Date.now(),
+    link: { provider: 'quark', originalUrl: 'https://pan.quark.cn/s/unpersistedfail' },
+    state: { phase: 'failed', code: 'parse_failed', message: '解析链接失败，未获取文件列表' },
+  };
+  win.webContents.send(PUSH.jobEvent, unpersistedJob);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const unpersistedRowBefore = await read(`Boolean(document.querySelector('.taskrow[data-job-id="fixture-unpersisted-failed"]'))`);
+  assert.strictEqual(unpersistedRowBefore, true, 'Unpersisted failure row must be rendered in UI');
+  passed++;
+
+  // Select only this unpersisted failed job
+  await read(`(() => {
+    for (const box of document.querySelectorAll(".taskrow input.job-select")) {
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const box = document.querySelector('.taskrow[data-job-id="fixture-unpersisted-failed"] input.job-select');
+    if (box) {
+      box.checked = true;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Click delete
+  await read(`document.getElementById("selected-purge")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const toast1 = await read(`document.getElementById("toast")?.textContent.trim() || ""`);
+  assert.strictEqual(toast1, '已从列表移除 1 个任务', `Single unpersisted delete feedback must be '已从列表移除 1 个任务', got '${toast1}'`);
+  passed++;
+
+  const unpersistedRowAfter = await read(`Boolean(document.querySelector('.taskrow[data-job-id="fixture-unpersisted-failed"]'))`);
+  assert.strictEqual(unpersistedRowAfter, false, 'Unpersisted failure row must be removed from UI after purge');
+  passed++;
+
+  const taskStoreHasUnpersisted = tasks.all().some((t) => t.id === 'fixture-unpersisted-failed');
+  assert.strictEqual(taskStoreHasUnpersisted, false, 'TaskStore must not hold unpersisted job');
+  passed++;
+
+  // 2. Batch delete: 1 persisted done job + 1 unpersisted failed job
+  const persistedDoneJob = {
+    id: 'fixture-persisted-done-1',
+    createdAt: Date.now(),
+    link: { provider: 'quark', originalUrl: 'https://pan.quark.cn/s/persisteddone' },
+    files: [{ name: 'file-done.zip', size: 1024 }],
+    state: { phase: 'done', files: [{ name: 'file-done.zip', size: 1024, complete: true }] },
+  };
+  tasks.save({
+    id: persistedDoneJob.id,
+    createdAt: persistedDoneJob.createdAt,
+    link: persistedDoneJob.link,
+    files: persistedDoneJob.files,
+    state: persistedDoneJob.state,
+  });
+
+  const unpersistedJob2 = {
+    id: 'fixture-unpersisted-failed-2',
+    createdAt: Date.now(),
+    link: { provider: 'baidu', originalUrl: 'https://pan.baidu.com/s/unpersistedfail2' },
+    state: { phase: 'failed', code: 'network_error', message: '网络连接超时' },
+  };
+
+  win.webContents.send(PUSH.jobEvent, persistedDoneJob);
+  win.webContents.send(PUSH.jobEvent, unpersistedJob2);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  // Select both jobs
+  await read(`(() => {
+    for (const box of document.querySelectorAll(".taskrow input.job-select")) {
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    for (const id of ["fixture-persisted-done-1", "fixture-unpersisted-failed-2"]) {
+      const box = document.querySelector('.taskrow[data-job-id="' + id + '"] input.job-select');
+      if (box) {
+        box.checked = true;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Click delete
+  await read(`document.getElementById("selected-purge")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const toast2 = await read(`document.getElementById("toast")?.textContent.trim() || ""`);
+  assert.strictEqual(
+    toast2,
+    '已删除 1 个持久化记录，并从列表移除 1 个临时任务',
+    `Mixed batch delete feedback must differentiate persisted vs unpersisted, got '${toast2}'`
+  );
+  passed++;
+
+  const rowDoneAfter = await read(`Boolean(document.querySelector('.taskrow[data-job-id="fixture-persisted-done-1"]'))`);
+  const rowFailAfter = await read(`Boolean(document.querySelector('.taskrow[data-job-id="fixture-unpersisted-failed-2"]'))`);
+  assert.strictEqual(rowDoneAfter, false, 'Persisted done job must be removed from UI');
+  assert.strictEqual(rowFailAfter, false, 'Unpersisted failure job must be removed from UI');
+  passed += 2;
+
+  const taskStoreHasPersisted = tasks.all().some((t) => t.id === 'fixture-persisted-done-1');
+  assert.strictEqual(taskStoreHasPersisted, false, 'Persisted done job must be removed from TaskStore');
+  passed++;
+
+  // 3. Active job cannot be purged
+  await read(`(() => {
+    for (const box of document.querySelectorAll(".taskrow input.job-select")) {
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const box = document.querySelector('.taskrow[data-job-id="fixture-quark-downloading"] input.job-select');
+    if (box) {
+      box.checked = true;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  await read(`document.getElementById("selected-purge")?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const toast3 = await read(`document.getElementById("toast")?.textContent.trim() || ""`);
+  assert.strictEqual(
+    toast3,
+    '勾选的任务里没有已结束（完成或失败）的任务可供删除',
+    `Active job purge attempt must be rejected with notice, got '${toast3}'`
+  );
+  passed++;
+
+  const activeRowStillPresent = await read(`Boolean(document.querySelector('.taskrow[data-job-id="fixture-quark-downloading"]'))`);
+  assert.strictEqual(activeRowStillPresent, true, 'Active downloading job must not be purged');
+  passed++;
+
+  // Clear selections
+  await read(`(() => {
+    for (const box of document.querySelectorAll(".taskrow input.job-select")) {
+      box.checked = false;
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  })()`);
+
+  return { passed };
 }
 
 /** An empty filter and an empty list say different things and differ in what they offer. */
