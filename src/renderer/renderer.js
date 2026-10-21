@@ -145,11 +145,13 @@
     archived: { label: '已归档', tone: 'idle' },
   };
 
-  /** A partial download is a `done` job whose per-file progress still holds an error. */
+  /** A partial download is a job whose per-file progress holds both complete and error files. */
   function isPartial(job) {
     const state = (job && job.state) || {};
-    if (state.phase !== 'done' || !Array.isArray(state.progress)) return false;
-    return state.progress.some((item) => item.status === 'error');
+    if (!['done', 'failed'].includes(state.phase) || !Array.isArray(state.progress) || !state.progress.length) return false;
+    const hasComplete = state.progress.some((item) => item.status === 'complete');
+    const hasError = state.progress.some((item) => item.status === 'error');
+    return hasComplete && hasError;
   }
 
   function partialCounts(job) {
@@ -160,10 +162,9 @@
 
   function statusKey(job) {
     const phase = (job && job.state && job.state.phase) || 'loading';
-    // Two of the five states are not one-to-one with a phase: an archived job has
-    // left the list the user asked to see, and a done job with a failed file is
-    // only partly done.
-    if (phase === 'done') return isArchived(job) ? 'archived' : isPartial(job) ? 'partial' : 'done';
+    if (isArchived(job)) return 'archived';
+    if (isPartial(job)) return 'partial';
+    if (phase === 'done') return 'done';
     if (!STATUS_TEXT[phase]) return 'paused';
     return phase;
   }
@@ -395,11 +396,11 @@
       if (prog.total > 0) return `${formatBytes(prog.completed)} / ${formatBytes(prog.total)}`;
       return '下载中…';
     }
+    if (isPartial(j)) {
+      const counts = partialCounts(j);
+      return `${counts.completed} 个完成 · ${counts.failed} 个失败`;
+    }
     if (phase === 'done') {
-      if (isPartial(j)) {
-        const counts = partialCounts(j);
-        return `${counts.completed} 个完成 · ${counts.failed} 个失败`;
-      }
       const prog = aggregateProgress(state.progress);
       if (prog.total > 0) return formatBytes(prog.completed || prog.total);
       return doneDetail(j);
@@ -476,6 +477,20 @@
     });
 
     return list;
+  }
+
+  function isJobVisible(j) {
+    if (!j) return false;
+    if (!matchesFilter(j, viewState.phaseFilter)) return false;
+    if (viewState.providerFilter && (!j.link || j.link.provider !== viewState.providerFilter)) return false;
+    const q = viewState.query.toLowerCase().trim();
+    if (q) {
+      const name = getJobName(j).toLowerCase();
+      const prov = (PROVIDER_LABELS[j.link && j.link.provider] || '').toLowerCase();
+      const shareId = (j.link && j.link.shareId || '').toLowerCase();
+      if (!name.includes(q) && !prov.includes(q) && !shareId.includes(q)) return false;
+    }
+    return true;
   }
 
   function setPhaseFilter(filter) {
@@ -629,14 +644,27 @@
         const res = await api.unarchiveJobs(ids);
         notify(res && res.restored ? `已恢复 ${res.restored} 个任务` : '勾选的任务里没有可恢复的');
       } else if (action === 'purge') {
-        const res = await api.purgeJobs(ids);
-        for (const id of ids) {
-          purgedIds.add(id);
-          jobs.delete(id);
-          const idx = jobOrder.indexOf(id);
-          if (idx !== -1) jobOrder.splice(idx, 1);
+        const purgeable = ids.filter((id) => {
+          const j = jobs.get(id);
+          const phase = j && j.state && j.state.phase;
+          return ['done', 'failed'].includes(phase);
+        });
+        if (!purgeable.length) {
+          notify('勾选的任务里没有已结束（完成或失败）的任务可供删除');
+          return;
         }
-        notify(res && res.removed ? `已删除 ${res.removed} 个任务记录` : '勾选的任务里没有可删除的');
+        const res = await api.purgeJobs(purgeable);
+        if (res && res.removed) {
+          for (const id of purgeable) {
+            purgedIds.add(id);
+            jobs.delete(id);
+            const idx = jobOrder.indexOf(id);
+            if (idx !== -1) jobOrder.splice(idx, 1);
+          }
+          notify(`已删除 ${res.removed} 个任务记录`);
+        } else {
+          notify('勾选的任务里没有可删除的');
+        }
       }
       viewState.selectedIds.clear();
       await refreshJobs();
@@ -990,6 +1018,11 @@
       return;
     }
 
+    const drawerScrollTop = drawer.scrollTop;
+    const openSummaries = new Set(
+      Array.from(drawer.querySelectorAll('details[open] summary')).map((s) => s.textContent)
+    );
+
     drawer.replaceChildren();
     const state = j.state || {};
     const phase = state.phase;
@@ -1235,6 +1268,61 @@
       }, 'button secondary small');
       copyDiag.style.marginTop = '14px';
       drawer.append(copyDiag);
+    }
+
+    if (openSummaries.size) {
+      drawer.querySelectorAll('details').forEach((d) => {
+        const sum = d.querySelector('summary');
+        if (sum && openSummaries.has(sum.textContent)) {
+          d.open = true;
+        }
+      });
+    }
+    drawer.scrollTop = drawerScrollTop;
+  }
+
+  function updateDetailsProgressInPlace(j) {
+    const drawer = $('#drawer');
+    if (!drawer || drawer.hidden || viewState.detailId !== j.id) return;
+    const prog = aggregateProgress(j.state && j.state.progress);
+    if (!prog) return;
+
+    const heroP = drawer.querySelector('.drawerhero p');
+    if (heroP) {
+      heroP.textContent = (PROVIDER_LABELS[j.link && j.link.provider] || '未知网盘') + ' · ' + getJobStatusLabel(j);
+    }
+
+    if (viewState.detailTab === 'overview') {
+      const sizeText = prog.total > 0 ? `${formatBytes(prog.completed)} / ${formatBytes(prog.total)}` : getJobSizeOrStatusText(j);
+      const kvs = drawer.querySelectorAll('.detailkv');
+      for (const kv of kvs) {
+        const labelSpan = kv.querySelector('span:first-child');
+        if (labelSpan && labelSpan.textContent.includes('文件大小')) {
+          const valSpan = kv.querySelector('span:last-child');
+          if (valSpan) valSpan.textContent = sizeText;
+        } else if (labelSpan && labelSpan.textContent.includes('当前状态')) {
+          const valSpan = kv.querySelector('span:last-child');
+          if (valSpan) valSpan.textContent = getJobStatusLabel(j);
+        }
+      }
+    } else if (viewState.detailTab === 'files') {
+      const progress = Array.isArray(j.state && j.state.progress) ? j.state.progress : [];
+      const fileItems = drawer.querySelectorAll('.fileitem');
+      for (const item of fileItems) {
+        const nameEl = item.querySelector('.fileitem-name');
+        const statusEl = item.querySelector('small');
+        if (nameEl && statusEl) {
+          const fileName = nameEl.textContent;
+          const entry = progress.find((p) => p.name === fileName);
+          if (entry) {
+            if (entry.status === 'complete') statusEl.textContent = '下载完成';
+            else if (entry.status === 'error') statusEl.textContent = '下载失败';
+            else if (entry.totalLength > 0) {
+              statusEl.textContent = `${formatBytes(entry.completedLength || 0)} / ${formatBytes(entry.totalLength)}`;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1705,21 +1793,37 @@
     const previousJob = jobs.get(id);
     const previousPhase = previousJob && previousJob.state ? previousJob.state.phase : null;
     const currentPhase = job.state ? job.state.phase : null;
+    const stallChanged = Boolean(previousJob && previousJob.stalled) !== Boolean(job.stalled);
     jobs.set(id, job);
 
     let updatedInPlace = false;
-    if (!isNew && previousPhase === 'downloading' && currentPhase === 'downloading') {
-      updatedInPlace = updateRowProgressInPlace(job);
+    const isPureProgress = !isNew && !stallChanged && previousPhase === 'downloading' && currentPhase === 'downloading';
+
+    if (isPureProgress) {
+      const isVisible = isJobVisible(job);
+      if (isVisible) {
+        updatedInPlace = updateRowProgressInPlace(job);
+      } else {
+        // Hidden task by filter/search: update total speed without touching visible DOM
+        updateTotalSpeed();
+        updatedInPlace = true;
+      }
     }
 
     if (!updatedInPlace) {
       render();
     }
 
-    // A retried job comes back with a new id, so drop the drawer instead of
-    // leaving it pointed at a job that no longer exists.
-    if (viewState.detailId === id) renderDetails();
-    else if (viewState.detailId !== null && !jobs.has(viewState.detailId)) closeDetails();
+    // Retain drawer interactive state without tearing down when updating in-place
+    if (viewState.detailId === id) {
+      if (updatedInPlace) {
+        updateDetailsProgressInPlace(job);
+      } else {
+        renderDetails();
+      }
+    } else if (viewState.detailId !== null && !jobs.has(viewState.detailId)) {
+      closeDetails();
+    }
 
     // Announce a phase change only. A downloading job pushes progress every
     // second, and announcing that would flood a screen reader.
