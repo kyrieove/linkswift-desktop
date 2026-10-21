@@ -1096,6 +1096,29 @@
         drawer.append(kv);
       }
 
+      if (hasProgress || phase === 'downloading' || phase === 'done') {
+        const chunkSec = el('div', 'chunk-section');
+        chunkSec.style.margin = '14px 0 10px';
+        const chunkTitle = el('div', 'chunk-title', '分块下载映射 (64 Chunks)');
+        chunkTitle.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600';
+        const chunkGrid = el('div', 'chunk-grid');
+        chunkGrid.title = '64分块下载进度映射';
+        const totalBits = 64;
+        const ratio = prog.total > 0 ? (prog.completed / prog.total) : (phase === 'done' ? 1 : 0);
+        const filled = Math.min(totalBits, Math.floor(ratio * totalBits));
+        for (let i = 0; i < totalBits; i++) {
+          const bit = el('span', 'chunk-bit');
+          if (i < filled) {
+            bit.className += ' downloaded';
+          } else if (i === filled && phase === 'downloading') {
+            bit.className += ' downloading';
+          }
+          chunkGrid.append(bit);
+        }
+        chunkSec.append(chunkTitle, chunkGrid);
+        drawer.append(chunkSec);
+      }
+
       if (phase === 'needs-human') {
         drawer.append(el('div', 'detailnote', humanInfo(j).text));
       }
@@ -1600,6 +1623,8 @@
       if (created || duplicates) {
         const input = $('#link-input') || $('#share');
         if (input) input.value = '';
+        const quickInput = $('#quick-input');
+        if (quickInput) quickInput.value = '';
         const dialog = $('#create-dialog');
         if (dialog && dialog.open) dialog.close();
         const parts = [];
@@ -1747,6 +1772,7 @@
 
   /* ---------------------------------------------------------------- Event Handlers --- */
 
+  const speedHistory = [0, 0, 0, 0, 0, 0, 0, 0];
   function updateTotalSpeed() {
     const allJobs = Array.from(jobs.values());
     const activeDownloads = allJobs.filter((j) => j.state && j.state.phase === 'downloading');
@@ -1761,6 +1787,18 @@
       $('#total-speed').textContent = speedParts[0];
       const unitNode = $('#total-speed').nextElementSibling;
       if (unitNode) unitNode.textContent = (speedParts[1] || 'B') + '/s';
+    }
+    const sparkline = $('#sparkline-path');
+    if (sparkline) {
+      speedHistory.push(totalSpeed);
+      if (speedHistory.length > 8) speedHistory.shift();
+      const max = Math.max(...speedHistory, 1024 * 1024);
+      const points = speedHistory.map((val, idx) => {
+        const x = Math.round((idx / (speedHistory.length - 1)) * 100);
+        const y = Math.round(22 - (val / max) * 18);
+        return `${x},${y}`;
+      });
+      sparkline.setAttribute('d', `M${points[0]} L` + points.slice(1).join(' L'));
     }
   }
 
@@ -1870,6 +1908,33 @@
     // Header buttons
     const newTaskBtn = $('#new-task');
     if (newTaskBtn) newTaskBtn.addEventListener('click', openCreate);
+
+    // Quick paste and submit
+    const quickInput = $('#quick-input');
+    const quickSubmit = $('#quick-submit');
+    if (quickInput && quickSubmit) {
+      const handleQuick = async () => {
+        const val = quickInput.value.trim();
+        if (!val) {
+          notify('请先粘贴分享链接或文案');
+          quickInput.focus();
+          return;
+        }
+        quickSubmit.disabled = true;
+        try {
+          await submitTask(val);
+        } finally {
+          quickSubmit.disabled = false;
+        }
+      };
+      quickSubmit.addEventListener('click', handleQuick);
+      quickInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleQuick();
+        }
+      });
+    }
 
     // Search and Sort
     const searchInput = $('#search');
