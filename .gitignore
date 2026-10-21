@@ -10,3 +10,4 @@ probe-readme.md
 tools/probe/shot*
 test_download/
 .dsh/tmp/
+handoffs/

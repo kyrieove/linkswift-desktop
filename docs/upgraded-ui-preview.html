@@ -961,7 +961,7 @@
       <!-- 任务列表容器 -->
       <div class="task-container" id="tasks-scroll">
         <!-- 任务 1：高速下载中 -->
-        <div class="task-card active" onclick="selectTask(1)">
+        <div class="task-card active" data-phase="downloading" data-provider="quark" onclick="selectTask(1)">
           <div class="task-header">
             <div class="file-icon-box icon-video">MP4</div>
             <div class="file-main-info">
@@ -978,10 +978,10 @@
               </div>
             </div>
             <div class="task-actions" onclick="event.stopPropagation()">
-              <button class="card-action-btn" title="暂停" onclick="showToast('任务已暂停')">
+              <button class="card-action-btn" title="暂停" onclick="showToast('任务已暂停 (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 5v14M16 5v14"/></svg>
               </button>
-              <button class="card-action-btn" title="定位文件" onclick="showToast('打开文件所在目录')">
+              <button class="card-action-btn" title="定位文件" onclick="showToast('打开文件所在目录 (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7V5h7l2 3h9v12H3z"/></svg>
               </button>
             </div>
@@ -996,7 +996,7 @@
         </div>
 
         <!-- 任务 2：另一个下载中 -->
-        <div class="task-card" onclick="selectTask(2)">
+        <div class="task-card" data-phase="downloading" data-provider="baidu" onclick="selectTask(2)">
           <div class="task-header">
             <div class="file-icon-box icon-archive">ZIP</div>
             <div class="file-main-info">
@@ -1013,10 +1013,10 @@
               </div>
             </div>
             <div class="task-actions" onclick="event.stopPropagation()">
-              <button class="card-action-btn" title="暂停" onclick="showToast('任务已暂停')">
+              <button class="card-action-btn" title="暂停" onclick="showToast('任务已暂停 (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 5v14M16 5v14"/></svg>
               </button>
-              <button class="card-action-btn" title="定位文件" onclick="showToast('打开文件所在目录')">
+              <button class="card-action-btn" title="定位文件" onclick="showToast('打开文件所在目录 (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7V5h7l2 3h9v12H3z"/></svg>
               </button>
             </div>
@@ -1031,7 +1031,7 @@
         </div>
 
         <!-- 任务 3：需你操作一步 (认证阻断) -->
-        <div class="task-card" style="border-left: 3px solid var(--warning)" onclick="selectTask(3)">
+        <div class="task-card" data-phase="attention" data-provider="quark" style="border-left: 3px solid var(--warning)" onclick="selectTask(3)">
           <div class="task-header">
             <div class="file-icon-box" style="background:var(--warning-bg);color:var(--warning)">AUTH</div>
             <div class="file-main-info">
@@ -1057,7 +1057,7 @@
         </div>
 
         <!-- 任务 4：已完成 -->
-        <div class="task-card" onclick="selectTask(4)">
+        <div class="task-card" data-phase="completed" data-provider="uc" onclick="selectTask(4)">
           <div class="task-header">
             <div class="file-icon-box icon-document">DOC</div>
             <div class="file-main-info">
@@ -1072,10 +1072,10 @@
               </div>
             </div>
             <div class="task-actions" onclick="event.stopPropagation()">
-              <button class="card-action-btn" title="打开文件" onclick="showToast('正在打开文件...')">
+              <button class="card-action-btn" title="打开文件" onclick="showToast('正在打开文件... (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 3h7v7m0-7L11 13M10 4H4v16h16v-6"/></svg>
               </button>
-              <button class="card-action-btn" title="定位所在目录" onclick="showToast('打开文件所在目录')">
+              <button class="card-action-btn" title="定位所在目录" onclick="showToast('打开文件所在目录 (原型演示)')">
                 <svg style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7V5h7l2 3h9v12H3z"/></svg>
               </button>
             </div>
@@ -1103,13 +1103,13 @@
       <!-- 选中任务概览 -->
       <div>
         <h3 style="font-size:14px;font-weight:700;line-height:1.4" id="drawer-filename">Cyberpunk_Edgerunners_S01E01_4K_HDR.mp4</h3>
-        <p style="font-size:11.5px;color:var(--text-muted);margin-top:4px">夸克网盘直链 · GID: f7a2c87be6b127e8</p>
+        <p style="font-size:11.5px;color:var(--text-muted);margin-top:4px" id="drawer-subtitle">夸克网盘直链 · GID: f7a2c87be6b127e8</p>
       </div>
 
       <!-- 分块下载热力图 (Chunk BitMap) -->
       <div>
         <div class="drawer-section-title" style="margin-bottom:8px">分块下载状态 (Chunk Map · 64 块)</div>
-        <div class="detail-chunk-map">
+        <div class="detail-chunk-map" id="drawer-chunk-map">
           <!-- 模拟分块 -->
           <div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div>
           <div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div><div class="chunk-bit downloaded"></div>
@@ -1134,27 +1134,27 @@
       <div class="key-value-list">
         <div class="kv-item">
           <span class="kv-label">保存目录</span>
-          <span class="kv-val">D:\Downloads\LinkSwift</span>
+          <span class="kv-val" id="drawer-dir">D:\Downloads\LinkSwift</span>
         </div>
         <div class="kv-item">
           <span class="kv-label">文件总大小</span>
-          <span class="kv-val">2.80 GB (2,936,012,800 B)</span>
+          <span class="kv-val" id="drawer-size">2.80 GB (2,936,012,800 B)</span>
         </div>
         <div class="kv-item">
           <span class="kv-label">实时速度</span>
-          <span class="kv-val" style="color:var(--accent-primary)">28.4 MB/s (峰值 34.1 MB/s)</span>
+          <span class="kv-val" style="color:var(--accent-primary)" id="drawer-speed">28.4 MB/s (峰值 34.1 MB/s)</span>
         </div>
         <div class="kv-item">
           <span class="kv-label">连接并发数</span>
-          <span class="kv-val">16 条活跃 TCP 链接</span>
+          <span class="kv-val" id="drawer-conns">16 条活跃 TCP 链接</span>
         </div>
         <div class="kv-item">
           <span class="kv-label">断点续传支持</span>
-          <span class="kv-val" style="color:var(--accent-primary)">✓ 支持 (Accept-Ranges: bytes)</span>
+          <span class="kv-val" style="color:var(--accent-primary)" id="drawer-resume">✓ 支持 (Accept-Ranges: bytes)</span>
         </div>
         <div class="kv-item">
           <span class="kv-label">解析脚本版本</span>
-          <span class="kv-val">LinkSwift v2.8.4 (Upstream)</span>
+          <span class="kv-val" id="drawer-script">LinkSwift v2.8.4 (Upstream)</span>
         </div>
       </div>
 
@@ -1179,6 +1179,57 @@
   </div>
 
   <script>
+    const TASK_DATA = [
+      {
+        id: 1,
+        title: 'Cyberpunk_Edgerunners_S01E01_4K_HDR.mp4',
+        providerText: '夸克网盘直链 · GID: f7a2c87be6b127e8',
+        dir: 'D:\\Downloads\\LinkSwift',
+        size: '2.80 GB (2,936,012,800 B)',
+        speed: '28.4 MB/s (峰值 34.1 MB/s)',
+        conns: '16 条活跃 TCP 链接',
+        resume: '✓ 支持 (Accept-Ranges: bytes)',
+        script: 'LinkSwift v2.8.4 (Upstream)',
+        chunks: { downloaded: 26, downloading: 6, pending: 32 }
+      },
+      {
+        id: 2,
+        title: 'StableDiffusion_WebUI_v1.9_Forge_Portable.7z',
+        providerText: '百度网盘直链 · GID: 9a38f01b22e199d4',
+        dir: 'D:\\Downloads\\LinkSwift',
+        size: '12.4 GB (13,314,398,617 B)',
+        speed: '8.4 MB/s (峰值 12.0 MB/s)',
+        conns: '8 条活跃 TCP 链接',
+        resume: '✓ 支持 (Accept-Ranges: bytes)',
+        script: 'LinkSwift v2.8.4 (Upstream)',
+        chunks: { downloaded: 16, downloading: 4, pending: 44 }
+      },
+      {
+        id: 3,
+        title: 'DeepLearning_Course_Slides_2026.pdf',
+        providerText: '夸克网盘直链 · 等待登录态认证',
+        dir: 'D:\\Downloads\\LinkSwift',
+        size: '未知 (待解析)',
+        speed: '0.0 B/s (已暂停)',
+        conns: '0 条活跃链接',
+        resume: '等待解析结果',
+        script: 'LinkSwift v2.8.4 (Upstream)',
+        chunks: { downloaded: 0, downloading: 0, pending: 64 }
+      },
+      {
+        id: 4,
+        title: 'Annual_Financial_Report_Q3.xlsx',
+        providerText: 'UC 网盘直链 · GID: 3b17c89a01e479a2',
+        dir: 'D:\\Downloads\\LinkSwift',
+        size: '18.6 MB (19,503,513 B)',
+        speed: '下载完成 (平均 10.3 MB/s)',
+        conns: '0 (已断开)',
+        resume: '✓ 支持 (文件校验 PASS)',
+        script: 'LinkSwift v2.8.4 (Upstream)',
+        chunks: { downloaded: 64, downloading: 0, pending: 0 }
+      }
+    ];
+
     // 切换主题 (深色 / 浅色)
     function toggleTheme() {
       const current = document.body.getAttribute('data-theme');
@@ -1214,7 +1265,7 @@
         input.focus();
         return;
       }
-      showToast('正在嗅探直链并创建 aria2 下载...');
+      showToast('正在嗅探直链并创建 aria2 下载... (原型演示)');
       input.value = '';
     }
 
@@ -1223,41 +1274,87 @@
       document.querySelectorAll('.task-card').forEach((card, idx) => {
         card.classList.toggle('active', idx + 1 === id);
       });
-      const titles = [
-        'Cyberpunk_Edgerunners_S01E01_4K_HDR.mp4',
-        'StableDiffusion_WebUI_v1.9_Forge_Portable.7z',
-        'DeepLearning_Course_Slides_2026.pdf',
-        'Annual_Financial_Report_Q3.xlsx'
-      ];
-      document.getElementById('drawer-filename').textContent = titles[id - 1] || '下载任务详情';
+      const data = TASK_DATA[id - 1] || TASK_DATA[0];
+      const titleEl = document.getElementById('drawer-filename');
+      const subtitleEl = document.getElementById('drawer-subtitle');
+      const dirEl = document.getElementById('drawer-dir');
+      const sizeEl = document.getElementById('drawer-size');
+      const speedEl = document.getElementById('drawer-speed');
+      const connsEl = document.getElementById('drawer-conns');
+      const resumeEl = document.getElementById('drawer-resume');
+      const scriptEl = document.getElementById('drawer-script');
+      const chunkMapEl = document.getElementById('drawer-chunk-map');
+
+      if (titleEl) titleEl.textContent = data.title;
+      if (subtitleEl) subtitleEl.textContent = data.providerText;
+      if (dirEl) dirEl.textContent = data.dir;
+      if (sizeEl) sizeEl.textContent = data.size;
+      if (speedEl) speedEl.textContent = data.speed;
+      if (connsEl) connsEl.textContent = data.conns;
+      if (resumeEl) resumeEl.textContent = data.resume;
+      if (scriptEl) scriptEl.textContent = data.script;
+
+      if (chunkMapEl && data.chunks) {
+        chunkMapEl.replaceChildren();
+        for (let i = 0; i < data.chunks.downloaded; i++) {
+          const bit = document.createElement('div');
+          bit.className = 'chunk-bit downloaded';
+          chunkMapEl.appendChild(bit);
+        }
+        for (let i = 0; i < data.chunks.downloading; i++) {
+          const bit = document.createElement('div');
+          bit.className = 'chunk-bit downloading';
+          chunkMapEl.appendChild(bit);
+        }
+        for (let i = 0; i < data.chunks.pending; i++) {
+          const bit = document.createElement('div');
+          bit.className = 'chunk-bit';
+          chunkMapEl.appendChild(bit);
+        }
+      }
+
       const drawer = document.getElementById('inspector-drawer');
       drawer.classList.remove('collapsed');
     }
 
     function filterCategory(cat) {
       document.querySelectorAll('.nav-list .nav-item').forEach(item => item.classList.remove('active'));
-      event.currentTarget.classList.add('active');
-      showToast(`已筛选分类: ${cat}`);
+      if (event && event.currentTarget) event.currentTarget.classList.add('active');
+      let visibleCount = 0;
+      document.querySelectorAll('.task-card').forEach(card => {
+        const match = (cat === 'all' || card.dataset.phase === cat);
+        card.style.display = match ? 'flex' : 'none';
+        if (match) visibleCount++;
+      });
+      const catNames = { all: '全部任务', downloading: '下载中', attention: '待你处理', completed: '已完成' };
+      showToast(`已筛选: ${catNames[cat] || cat} (${visibleCount} 项) (原型演示)`);
     }
 
     function filterSource(src) {
       document.querySelectorAll('.nav-list .nav-item').forEach(item => item.classList.remove('active'));
-      event.currentTarget.classList.add('active');
-      showToast(`已过滤网盘: ${src}`);
+      if (event && event.currentTarget) event.currentTarget.classList.add('active');
+      let visibleCount = 0;
+      document.querySelectorAll('.task-card').forEach(card => {
+        const match = (src === 'all' || card.dataset.provider === src);
+        card.style.display = match ? 'flex' : 'none';
+        if (match) visibleCount++;
+      });
+      const srcNames = { quark: '夸克网盘', baidu: '百度网盘', uc: 'UC 网盘', xunlei: '迅雷云盘' };
+      showToast(`已过滤: ${srcNames[src] || src} (${visibleCount} 项) (原型演示)`);
     }
 
     function handleAuthClick() {
-      showToast('正在打开安全浏览器环境以完成网盘授权...');
+      showToast('正在打开安全浏览器环境以完成网盘授权... (原型演示)');
     }
 
     function copyDirectLink() {
       navigator.clipboard?.writeText('https://download.pan.quark.cn/linkswift/direct_stream_demo');
-      showToast('✓ 高速直链已复制到剪贴板');
+      showToast('✓ 高速直链已复制到剪贴板 (原型演示)');
     }
 
     function copyAria2Command() {
       navigator.clipboard?.writeText('aria2c -c -x16 "https://download.pan.quark.cn/linkswift/direct_stream_demo"');
-      showToast('✓ aria2 命令行调用串已复制');
+      showToast('✓ aria2 命令行调用串已复制 (原型演示)');
     }
 
     // 模拟动态速度波动

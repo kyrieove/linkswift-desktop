@@ -112,6 +112,7 @@
   // Host-owned replacement data
   const jobs = new Map();
   const jobOrder = [];
+  const purgedIds = new Set();
   let lastListKey = null;
   let toastTimer = null;
   let submitting = false;
@@ -480,6 +481,7 @@
   function setPhaseFilter(filter) {
     viewState.phaseFilter = filter;
     viewState.providerFilter = null;
+    viewState.selectedIds.clear();
     showPage('tasks');
     render();
   }
@@ -487,6 +489,7 @@
   function setProviderFilter(prov) {
     viewState.providerFilter = prov;
     viewState.phaseFilter = 'all';
+    viewState.selectedIds.clear();
     showPage('tasks');
     render();
   }
@@ -613,7 +616,10 @@
 
   /** Archive or purge whatever is selected, then drop the selection. */
   async function runBatch(action, onlyIds) {
-    const ids = Array.isArray(onlyIds) ? onlyIds : Array.from(viewState.selectedIds);
+    const visibleSet = new Set(visibleJobs().map((j) => j.id));
+    const ids = Array.isArray(onlyIds)
+      ? onlyIds
+      : Array.from(viewState.selectedIds).filter((id) => visibleSet.has(id));
     if (!ids.length) return;
     try {
       if (action === 'archive') {
@@ -624,6 +630,12 @@
         notify(res && res.restored ? `已恢复 ${res.restored} 个任务` : '勾选的任务里没有可恢复的');
       } else if (action === 'purge') {
         const res = await api.purgeJobs(ids);
+        for (const id of ids) {
+          purgedIds.add(id);
+          jobs.delete(id);
+          const idx = jobOrder.indexOf(id);
+          if (idx !== -1) jobOrder.splice(idx, 1);
+        }
         notify(res && res.removed ? `已删除 ${res.removed} 个任务记录` : '勾选的任务里没有可删除的');
       }
       viewState.selectedIds.clear();
@@ -891,18 +903,7 @@
 
     // Aggregate download speed across all downloading jobs
     const activeDownloads = allJobs.filter((j) => j.state && j.state.phase === 'downloading');
-    let totalSpeed = 0;
-    for (const j of activeDownloads) {
-      const p = aggregateProgress(j.state && j.state.progress);
-      totalSpeed += p.speed;
-    }
-    const speedFormatted = formatBytes(totalSpeed);
-    const speedParts = speedFormatted.split(' ');
-    if ($('#total-speed')) {
-      $('#total-speed').textContent = speedParts[0];
-      const unitNode = $('#total-speed').nextElementSibling;
-      if (unitNode) unitNode.textContent = (speedParts[1] || 'B') + '/s';
-    }
+    updateTotalSpeed();
 
     // Task summary. "已完成" must only count jobs with local bytes; a job that was
     // handed to the clipboard or the browser is 已投递, not 已完成.
@@ -966,7 +967,7 @@
       '时间: ' + new Date().toISOString(),
       '任务: ' + job.id,
       '网盘: ' + (link.provider || '?') + ' / ' + (link.shareId || '?'),
-      '提取码: ' + (link.passcode || '无'),
+      '提取码: ' + (link.passcode ? '[已隐藏]' : '无'),
       '阶段: ' + (state.phase || '?'),
       state.step !== undefined ? `失败步骤: 第 ${state.step + 1} 步（${state.verb || '?'}）` : null,
       state.selector ? '目标: ' + state.selector : null,
@@ -1196,8 +1197,10 @@
             const detail = el('details');
             detail.style.marginTop = '10px';
             detail.append(el('summary', 'help', '请求头 (' + headers.length + ' 项)'));
+            const SENSITIVE_HEADERS = new Set(['cookie', 'authorization', 'set-cookie', 'proxy-authorization', 'x-auth-token']);
             for (const [k, v] of headers) {
-              const kv = el('p', 'help', `${k}: ${v}`);
+              const displayVal = SENSITIVE_HEADERS.has(String(k).toLowerCase()) ? '[已隐藏]' : v;
+              const kv = el('p', 'help', `${k}: ${displayVal}`);
               kv.style.wordBreak = 'break-all';
               detail.append(kv);
             }
@@ -1459,8 +1462,11 @@
     if (err) err.hidden = true;
 
     if ($('#new-dir')) $('#new-dir').value = (currentSettings.aria2 && currentSettings.aria2.dir) || '下载目录';
-    const choice = $(`input[name="new-delivery"][value="${currentSettings.delivery}"]`);
-    if (choice) choice.checked = true;
+    const label = $('#dialog-delivery-label');
+    if (label) {
+      const modeNames = { aria2: '直接下载 (内置 aria2)', clipboard: '复制直链', browser: '浏览器下载' };
+      label.textContent = modeNames[currentSettings.delivery] || currentSettings.delivery || '直接下载 (内置 aria2)';
+    }
 
     dialog.showModal();
     const input = $('#link-input') || $('#share');
@@ -1469,8 +1475,7 @@
 
   /** @returns {string | null} the delivery picked in the new-task dialog */
   function selectedDelivery() {
-    const picked = document.querySelector('input[name="new-delivery"]:checked');
-    return picked && picked.value ? picked.value : null;
+    return currentSettings.delivery || 'aria2';
   }
 
   async function submitTask(raw) {
@@ -1493,12 +1498,6 @@
     }
 
     try {
-      // The dialog's delivery choice is real: it becomes the saved global setting
-      // before the job is submitted, because that is what the host reads.
-      const picked = selectedDelivery();
-      if (picked && picked !== currentSettings.delivery) {
-        currentSettings = await api.setSettings(Object.assign({}, currentSettings, { delivery: picked }));
-      }
       const result = await api.submit(text);
       // One paste can be several links; each one answers for itself so a bad
       // entry cannot block the others.
@@ -1575,7 +1574,8 @@
   }
 
   async function batchSelected(action) {
-    const ids = Array.from(viewState.selectedIds);
+    const visibleSet = new Set(visibleJobs().map((j) => j.id));
+    const ids = Array.from(viewState.selectedIds).filter((id) => visibleSet.has(id));
     if (!ids.length) return;
 
     let targetJobs = [];
@@ -1655,14 +1655,67 @@
 
   /* ---------------------------------------------------------------- Event Handlers --- */
 
+  function updateTotalSpeed() {
+    const allJobs = Array.from(jobs.values());
+    const activeDownloads = allJobs.filter((j) => j.state && j.state.phase === 'downloading');
+    let totalSpeed = 0;
+    for (const j of activeDownloads) {
+      const p = aggregateProgress(j.state && j.state.progress);
+      totalSpeed += p.speed;
+    }
+    const speedFormatted = formatBytes(totalSpeed);
+    const speedParts = speedFormatted.split(' ');
+    if ($('#total-speed')) {
+      $('#total-speed').textContent = speedParts[0];
+      const unitNode = $('#total-speed').nextElementSibling;
+      if (unitNode) unitNode.textContent = (speedParts[1] || 'B') + '/s';
+    }
+  }
+
+  function updateRowProgressInPlace(job) {
+    const row = document.querySelector(`article.taskrow[data-job-id="${job.id}"]`);
+    if (!row) return false;
+    const prog = aggregateProgress(job.state && job.state.progress);
+    if (!prog || prog.total <= 0) return false;
+
+    const progress = row.querySelector('.progress');
+    if (!progress) return false;
+    progress.setAttribute('aria-valuenow', String(prog.percent));
+    const fill = progress.querySelector('span');
+    if (fill) fill.style.width = prog.percent + '%';
+
+    const metrics = row.querySelector('.rowmeta .metrics');
+    if (metrics) {
+      if (prog.speed > 0) {
+        metrics.textContent = `${formatSpeed(prog.speed)}　·　${formatEta(prog.total - prog.completed, prog.speed)}`;
+      } else {
+        metrics.textContent = `${prog.percent}% · 等待数据`;
+      }
+    }
+
+    updateTotalSpeed();
+    return true;
+  }
+
   function handleJobEvent(job) {
-    if (!job || typeof job !== 'object' || !job.id) return;
+    if (!job || typeof job !== 'object' || !job.id || purgedIds.has(job.id)) return;
     const id = job.id;
-    if (!jobs.has(id)) jobOrder.unshift(id);
-    const previousPhase = jobs.has(id) ? jobs.get(id).state && jobs.get(id).state.phase : null;
+    const isNew = !jobs.has(id);
+    if (isNew) jobOrder.unshift(id);
+    const previousJob = jobs.get(id);
+    const previousPhase = previousJob && previousJob.state ? previousJob.state.phase : null;
+    const currentPhase = job.state ? job.state.phase : null;
     jobs.set(id, job);
 
-    render();
+    let updatedInPlace = false;
+    if (!isNew && previousPhase === 'downloading' && currentPhase === 'downloading') {
+      updatedInPlace = updateRowProgressInPlace(job);
+    }
+
+    if (!updatedInPlace) {
+      render();
+    }
+
     // A retried job comes back with a new id, so drop the drawer instead of
     // leaving it pointed at a job that no longer exists.
     if (viewState.detailId === id) renderDetails();
@@ -1671,7 +1724,7 @@
     // Announce a phase change only. A downloading job pushes progress every
     // second, and announcing that would flood a screen reader.
     const live = $('#live-region');
-    if (live && previousPhase !== job.state.phase) {
+    if (live && previousPhase !== currentPhase) {
       const pLabel = (job.link && PROVIDER_LABELS[job.link.provider]) || '任务';
       const sId = (job.link && job.link.shareId) || '';
       live.textContent = `${pLabel} ${sId}：${getJobStatusLabel(job)}`;
@@ -1689,7 +1742,7 @@
       const existing = await api.listJobs();
       if (Array.isArray(existing)) {
         for (const j of existing) {
-          if (!j || !j.id) continue;
+          if (!j || !j.id || purgedIds.has(j.id)) continue;
           jobs.set(j.id, j);
           if (!jobOrder.includes(j.id)) jobOrder.push(j.id);
         }
@@ -1715,6 +1768,7 @@
     if (searchInput) {
       searchInput.addEventListener('input', (e) => {
         viewState.query = e.target.value;
+        viewState.selectedIds.clear();
         render();
       });
     }
@@ -1809,11 +1863,6 @@
       });
     }
 
-    // About dialog
-    const aboutBtn = $('#about');
-    if (aboutBtn) aboutBtn.addEventListener('click', () => { const d = $('#info-dialog'); if (d) d.showModal(); });
-    const closeInfoBtn = $('#close-info');
-    if (closeInfoBtn) closeInfoBtn.addEventListener('click', () => { const d = $('#info-dialog'); if (d && d.open) d.close(); });
 
     // Create dialog
     const closeCreateBtn = $('#close-create');
@@ -1959,6 +2008,12 @@
         const status = $('#archive-status');
         try {
           const res = ids.length ? await api.purgeJobs(ids) : { removed: 0 };
+          for (const id of ids) {
+            purgedIds.add(id);
+            jobs.delete(id);
+            const idx = jobOrder.indexOf(id);
+            if (idx !== -1) jobOrder.splice(idx, 1);
+          }
           if (status) {
             status.hidden = false;
             status.textContent = `已清空 ${res.removed || 0} 条归档记录`;
