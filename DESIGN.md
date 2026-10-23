@@ -388,3 +388,81 @@ Electron 44.8.0 实测。探针脚本在 `tools/probe/`，开发时随仓库走�
 4. **暂停 / 继续 / 取消**。`aria2.forcePause` / `aria2.unpause` / `aria2.forceRemove`；任务状态机新增 `linked`（已拿到链接）与 `paused`（已暂停），与「下载中」「下载失败」「下载完成」并列。
 5. **文件夹多文件**。上游脚本按文件逐个发 `aria2.addUri`，因此驱动先点它的「全部推送至下载器」，应用侧再把短时间内的多个 `addUri` 合并成一次投递，否则一个文件夹只会下到第一个文件。
 6. **UC 网盘与迅雷云盘**。`src/shared/providers.js` 增加两条声明式步骤表。两家的选择器来自脚本自身的挂载点表、未在真实分享页上验证，所以标了 `experimental`：驱动点不到时不停在「上游改版」，而是留着窗口让用户点一次「下载助手」，`addUri` 照样被应用接住。迅雷的凭证在 localStorage 而不是 Cookie，登录因此走应用自己的窗口；上游缺失的 `getAccessToken` 在注入前补一行补丁。
+
+## 12. 增补（2026-10-22）：多来源多引擎，接入 yt-dlp
+
+第 11 节把「取链」和「下载」分成了两件事，但两件事都还锁在网盘上：来源只有四个网盘，下载器只有 aria2。这一节把它们都变成可插拔的。完整决策见 `docs/adr/0004-multi-engine-and-yt-dlp.md`。
+
+### 12.1 来源是联合类型
+
+`src/shared/protocol.js`：
+
+```
+Source = { kind:'netdisk', provider, shareId, passcode?, raw }
+       | { kind:'media',   url, raw }
+       | { kind:'direct',  url, raw }
+```
+
+`src/shared/providers.js` 退成网盘取链配方表（步骤表、登录方式、哪些域名带 cookie）。`src/shared/sources.js` 是来源注册表，把配方和新的 `media` / `direct` 收在一处，每条给出 `id` / `label` / `kind` / `matches` / `parse` / `capability` / `engine`。
+
+判定顺序：网盘最具体先判，媒体次之（判定最宽），直链最后（按文件扩展名）。
+
+### 12.2 引擎是可插拔的
+
+`src/main/engines/` 下每个引擎实现同一组方法：
+
+```
+status()          引擎在不在、什么版本
+start(target)     开始搬，产出一次运行
+progress(run)     当前进度行
+pause(run)        暂停
+resume(run)       继续
+retry(run)        失败后重新投递
+cancel(run)       取消
+```
+
+`Job` 不再直接调 `aria2.*`。原来那几处（投递、轮询、暂停、续传、取消、重推）现在问的是引擎，形状一样。
+
+来源声明自己的默认引擎：网盘与直链用 aria2，媒体用 yt-dlp。用户可以在设置里按来源覆盖，所以 aria2 是实现而不是前提。
+
+持久化里的 `gids` 换 `runs`，元素是 `{file, runId}`，`runId` 是引擎自己的句柄（aria2 是 GID，yt-dlp 是目标路径）。旧记录在 `JobManager.restore` 一处兼容。
+
+### 12.3 进度通道
+
+yt-dlp 的进度用制表符分隔，不用 JSON。实测：`%(progress.total_bytes_estimate)j` 在值为空时渲染成裸的 `NA`，整行不是合法 JSON，`JSON.parse` 直接抛错；字符串字段自带引号会和外层引号打架；Windows 路径会被转义成双反斜杠。制表符方案实测路径原样输出。
+
+阶段信号（解析完了、文件落位了）走 `--print-to-file` 写文件，不走 stdout。原因：`--print` 隐含 `--quiet`，`--quiet` 会把 `--progress-template` 一起关掉。
+
+### 12.4 三个 Windows 上必须记住的坑
+
+- **PyInstaller 单文件 exe 会再起一个子进程。** 只杀引导进程，真正的 Python 还在跑。要用 `taskkill /pid <pid> /T /F` 收整棵树。
+- **被杀的进程的收尾报告属于上一轮。** 每一次 spawn 带一个 token，对不上的收尾报告丢掉，否则续传刚起步就被上一轮的死讯判成失败。
+- **别用 yt-dlp 自己的 `-U`。** 上游发行说明明确说过旧版可执行文件有中间人攻击风险。应用自己更新：拉发行版、按 `SHA2-256SUMS` 校验、换文件。
+
+### 12.5 界面从注册表画
+
+渲染进程不再有写死的网盘表。`INVOKE.sources` 把注册表推过去，侧栏来源清单、能力表、来源页、筛选和计数都从它画。加一种来源改一处，不改十几个地方。
+
+来源的颜色是注册表里的十六进制值，不是 CSS 类名。样式表里按来源写死的颜色规则删掉了。
+
+`PROVIDER_LABELS`、`PROVIDER_LOGIN`、`PROVIDER_CAPABILITY` 三张表删掉，它们的内容注册表里已经有了，留在渲染进程就是两份会漂移的事实。
+
+老任务的 `link` 没有 `kind` 字段，渲染进程的 `sourceId()` 认这种形状。
+
+**侧栏按类别给入口，不按来源给。** 四家网盘是四个来源，但属于同一个类别 `netdisk`。侧栏只排「网盘 / 媒体 / 直链」三个按钮，每家网盘的能力、徽章与最近一次真实结果放在来源页的卡片上。注册表里的 `kindLabel` 与 `kindIcon` 就是给这三个按钮用的。
+
+筛选因此是三形态的联合：`{scope:'all'}`、`{scope:'kind', kind}`、`{scope:'provider', id}`。判断只有 `matchesSourceScope()` 一处。以前按 `link.provider` 筛，媒体与直链的记录没有这个字段，一筛就空。
+
+**能力与真实结果只写一处。** 「能力等级」是注册表里的固定结论，「本机上次成功」才是这台机器上的结果。这两句话挨在一起必须说得不一样，否则「已验证」紧挨「未验证」读起来像自相矛盾。设置页那张按网盘逐行列的表删掉了，来源页的卡片接管这件事。
+
+### 12.6 设置页的媒体
+
+画质、后处理开关、字幕、播放列表、ffmpeg 路径、yt-dlp 路径与更新频道、每个来源用哪个引擎，都在「设置 → 媒体」。同一页显示 yt-dlp 与 ffmpeg 的实际状态：版本、路径、ffprobe 在不在。找不到就写找不到，不写猜测。
+
+「每个来源用哪个引擎」默认是来源自己声明的那个。改掉之后 aria2 就不再是前提，这是这一节要留的口子。
+
+**但下拉只给真的跑得动的组合。** 注册表里的 `engines` 写明这一类来源真正能用的引擎：网盘只有 aria2（yt-dlp 不会解析分享页），媒体只有 yt-dlp（aria2 不会解析页面），直链两个都吃得下。一个类别只有一种引擎时不排下拉，写一句「网盘 aria2 / 媒体 yt-dlp」。`resolveEngineId()` 也做同样的校验：覆盖的引擎来源不支持时退回来源自己的默认，手改过的设置文件也不能配出一个跑不动的组合。
+
+### 12.7 许可证
+
+`resources/ytdlp/yt-dlp.exe` 是 PyInstaller 打的，含 GPLv3+ 代码，按 GPLv3+ 分发。本仓库 AGPL-3.0-or-later，与之兼容。义务是随二进制分发 `resources/ytdlp/THIRD_PARTY_LICENSES.txt`，并在 `NOTICE` 写署名。详见 `NOTICE`。

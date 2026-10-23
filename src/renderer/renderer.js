@@ -29,12 +29,13 @@
     return;
   }
 
-  const PROVIDER_LABELS = {
-    quark: '夸克网盘',
-    baidu: '百度网盘',
-    uc: 'UC 网盘',
-    xunlei: '迅雷云盘',
-  };
+  /**
+   * 来源注册表。主进程推过来的，界面上的每一份清单都从它画。
+   * 以前这里有一张写死的网盘表，加一种来源就要改十几个地方。
+   */
+  let sourceViews = [];
+  /** @type {Map<string, any>} */
+  let sourceMap = new Map();
 
   const DELIVERY_LABELS = {
     aria2: 'aria2 下载',
@@ -53,7 +54,90 @@
     external: '用你自己跑着的 aria2 / Motrix / AriaNg，填它的 RPC 地址与令牌。',
   };
 
-  const PROVIDER_LOGIN = { quark: 'cookie', baidu: 'cookie', uc: 'cookie', xunlei: 'window' };
+  /**
+   * 来源的显示名。认不出来时是「未知」，不能假装是某个网盘。
+   * @param {any} link
+   * @returns {string}
+   */
+  function sourceLabel(link) {
+    if (!link) return '未知';
+    const id = sourceId(link);
+    return sourceView(id)?.label || '未知来源';
+  }
+
+  /**
+   * 来源的标识，用来画色点和做筛选。
+   * @param {any} link
+   * @returns {string}
+   */
+  function sourceId(link) {
+    if (!link) return 'unknown';
+    // A record written before sources had a kind still names a netdisk.
+    if (link.kind === 'netdisk' || (!link.kind && link.provider)) return link.provider || 'unknown';
+    return link.kind || 'unknown';
+  }
+
+  /**
+   * 一条记录属于哪个来源类别。四家网盘共用 `netdisk`，
+   * 所以界面上能给它们一个共同的入口，而不是四个按钮。
+   * @param {any} link
+   * @returns {string}
+   */
+  function sourceKind(link) {
+    if (!link) return 'unknown';
+    if (link.kind === 'netdisk' || (!link.kind && link.provider)) return 'netdisk';
+    return link.kind || 'unknown';
+  }
+
+  /**
+   * 来源筛选的唯一入口。三个形态都在这里判断，
+   * 别的地方不再各写一遍条件。
+   * @param {any} job
+   * @param {{scope: string, kind?: string, id?: string}} scope
+   * @returns {boolean}
+   */
+  function matchesSourceScope(job, scope) {
+    if (!scope || scope.scope === 'all') return true;
+    if (scope.scope === 'kind') return sourceKind(job && job.link) === scope.kind;
+    if (scope.scope === 'provider') return sourceId(job && job.link) === scope.id;
+    return true;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {any}
+   */
+  function sourceView(id) {
+    return sourceMap.get(id) || null;
+  }
+
+  /**
+   * 来源类别。侧栏按类别给入口，所以四家网盘只占一个位置。
+   * 类别名与图标都来自注册表，不在界面里另写一张表。
+   * @returns {Array<{kind: string, label: string, icon: string}>}
+   */
+  function sourceGroups() {
+    const seen = new Map();
+    for (const view of sourceViews) {
+      if (seen.has(view.kind)) continue;
+      seen.set(view.kind, {
+        kind: view.kind,
+        label: view.kindLabel || view.label,
+        icon: view.kindIcon || 'link',
+      });
+    }
+    return [...seen.values()];
+  }
+
+  /**
+   * 网盘的登录方式，来自注册表。媒体和直链没有这一项。
+   * @param {any} link
+   * @returns {'cookie' | 'window' | null}
+   */
+  function sourceLoginKind(link) {
+    const view = sourceView(sourceId(link));
+    return view ? view.loginKind : null;
+  }
 
   const STATES = {
     loading: ['解析中', 'refresh'],
@@ -93,13 +177,25 @@
     'rate-limited': '账号被限流',
     'extract-failed': '取链没弹出',
     'aria2-down': '下载器没启动',
+    'media-unsupported': '这个地址 yt-dlp 不支持',
+    'media-auth': '需要登录',
+    'media-geo': '地区限制',
+    'media-merge': '合并失败，缺 ffmpeg',
+    'media-tool-missing': '找不到 yt-dlp',
+    'media-error': '媒体下载失败',
   };
 
   // Local view state
   const viewState = {
     page: 'tasks',
     phaseFilter: 'all',
-    providerFilter: null,
+    /**
+     * 来源筛选。三个形态，别再塞一个字符串进去。
+     *   { scope: 'all' }                     不按来源筛
+     *   { scope: 'kind', kind: 'netdisk' }  按类别筛（网盘 / 媒体 / 直链）
+     *   { scope: 'provider', id: 'quark' }   按单个来源筛
+     */
+    sourceScope: { scope: 'all' },
     query: '',
     sort: 'new', // 'new' | 'old' | 'name'
     selectedIds: new Set(),
@@ -111,7 +207,6 @@
 
   // Host-owned replacement data
   const jobs = new Map();
-  const jobOrder = [];
   const purgedIds = new Set();
   let lastListKey = null;
   let toastTimer = null;
@@ -276,15 +371,17 @@
       return state.progress.length > 1 ? `${state.progress[0].name} 等 ${state.progress.length} 个文件` : state.progress[0].name;
     }
     if (j.link && j.link.shareId) {
-      return `${PROVIDER_LABELS[j.link.provider] || '分享'} · ${j.link.shareId}`;
+      return `${sourceLabel(j.link) || '分享'} · ${j.link.shareId}`;
+    }
+    if (j.link && (j.link.kind === 'media' || j.link.kind === 'direct')) {
+      return j.link.kind === 'media' ? '媒体下载' : '直链下载';
     }
     return '（未命名任务）';
   }
 
   function humanInfo(j) {
     const reason = j.state && j.state.reason;
-    const provider = j.link && j.link.provider;
-    const isWindowLogin = reason === 'login' && PROVIDER_LOGIN[provider] === 'window';
+    const isWindowLogin = reason === 'login' && sourceLoginKind(j.link) === 'window';
 
     if (reason === 'transfer') {
       return {
@@ -301,6 +398,15 @@
       };
     }
     if (reason === 'login' || reason === 'login-window') {
+      // A media or direct job has no netdisk to sign into. The app's own window
+      // takes the site, and the session keeps the cookie.
+      if (j.link && j.link.kind !== 'netdisk') {
+        return {
+          label: '需登录',
+          action: '打开站点窗口',
+          text: '这个站点要登录才能下载。请在应用打开的窗口里登录或过验证，登录态会留在应用的会话里，然后点「继续」。',
+        };
+      }
       return {
         label: '需登录',
         action: isWindowLogin ? '打开登录窗口' : '登录网盘',
@@ -450,16 +556,14 @@
     // Filter by phase
     list = list.filter((j) => matchesFilter(j, viewState.phaseFilter));
 
-    // Filter by provider if selected
-    if (viewState.providerFilter) {
-      list = list.filter((j) => j.link && j.link.provider === viewState.providerFilter);
-    }
+    // Filter by source scope (category or one provider)
+    list = list.filter((j) => matchesSourceScope(j, viewState.sourceScope));
 
     // Filter by search query
     if (q) {
       list = list.filter((j) => {
         const name = getJobName(j).toLowerCase();
-        const prov = (PROVIDER_LABELS[j.link && j.link.provider] || '').toLowerCase();
+        const prov = sourceLabel(j.link).toLowerCase();
         const shareId = (j.link && j.link.shareId || '').toLowerCase();
         return name.includes(q) || prov.includes(q) || shareId.includes(q);
       });
@@ -482,11 +586,11 @@
   function isJobVisible(j) {
     if (!j) return false;
     if (!matchesFilter(j, viewState.phaseFilter)) return false;
-    if (viewState.providerFilter && (!j.link || j.link.provider !== viewState.providerFilter)) return false;
+    if (!matchesSourceScope(j, viewState.sourceScope)) return false;
     const q = viewState.query.toLowerCase().trim();
     if (q) {
       const name = getJobName(j).toLowerCase();
-      const prov = (PROVIDER_LABELS[j.link && j.link.provider] || '').toLowerCase();
+      const prov = sourceLabel(j.link).toLowerCase();
       const shareId = (j.link && j.link.shareId || '').toLowerCase();
       if (!name.includes(q) && !prov.includes(q) && !shareId.includes(q)) return false;
     }
@@ -495,14 +599,18 @@
 
   function setPhaseFilter(filter) {
     viewState.phaseFilter = filter;
-    viewState.providerFilter = null;
+    viewState.sourceScope = { scope: 'all' };
     viewState.selectedIds.clear();
     showPage('tasks');
     render();
   }
 
-  function setProviderFilter(prov) {
-    viewState.providerFilter = prov;
+  /**
+   * 按来源筛选。类别和单个来源共用一个入口。
+   * @param {{scope: string, kind?: string, id?: string}} scope
+   */
+  function setSourceScope(scope) {
+    viewState.sourceScope = scope || { scope: 'all' };
     viewState.phaseFilter = 'all';
     viewState.selectedIds.clear();
     showPage('tasks');
@@ -515,13 +623,9 @@
    * What the settings page may claim about a netdisk: the capability grade (a
    * fixed, verified conclusion) next to the last outcome that actually happened
    * on this machine. A provider nothing has run on says 未验证, not a guess.
+   *
+   * The grade itself comes from the source registry, so there is one table.
    */
-  const PROVIDER_CAPABILITY = {
-    quark: { grade: '一键取链', note: '已验证' },
-    baidu: { grade: '一键取链 · 大文件需转存', note: '已验证' },
-    uc: { grade: '一键取链', note: '已验证' },
-    xunlei: { grade: '仅转存 · 需手动推送', note: '实验性' },
-  };
 
   function formatHealthTime(at) {
     if (!at) return '';
@@ -530,30 +634,28 @@
     return sameDay ? date.toLocaleTimeString() : date.toLocaleString();
   }
 
-  function renderProviderHealth() {
-    const body = $('#provider-health-body');
-    if (!body) return;
-    body.replaceChildren();
-    for (const provider of ['quark', 'baidu', 'uc', 'xunlei']) {
-      const entry = providerHealth.find((item) => item.provider === provider);
-      const capability = PROVIDER_CAPABILITY[provider] || { grade: '未记录', note: '' };
-      const row = el('tr');
-      row.dataset.provider = provider;
-      row.append(
-        el('td', '', (PROVIDER_LABELS[provider] || provider) + (capability.note ? `（${capability.note}）` : '')),
-        el('td', '', capability.grade),
-      );
-      let statusText = '未验证';
-      if (entry && entry.verified) {
-        const when = formatHealthTime(entry.at);
-        statusText = entry.ok ? `成功 · ${when}` : `失败（${FAILURE_LABELS[entry.code] || entry.code || '未知'}）· ${when}`;
-      }
-      const statusCell = el('td', entry && entry.verified && !entry.ok ? 'health-failed' : '');
-      statusCell.textContent = statusText;
-      if (entry && entry.hint) statusCell.title = entry.hint;
-      row.append(statusCell);
-      body.append(row);
+  /**
+   * 一家网盘最近一次真实结果。没有记录就说「本机还没跑过」，不猜。
+   *
+   * 「已验证」是能力本身的结论，「本机上次成功」才是这台机器上的结果。
+   * 两句话挨在一起时必须说得不一样，否则读起来像自相矛盾。
+   *
+   * @param {string} id
+   * @returns {{text: string, failed: boolean, hint: string}}
+   */
+  function healthText(id) {
+    const entry = providerHealth.find((item) => item.provider === id);
+    if (!entry || !entry.verified) {
+      return { text: '本机还没跑过', failed: false, hint: '' };
     }
+    const when = formatHealthTime(entry.at);
+    return {
+      text: entry.ok
+        ? `本机上次成功 · ${when}`
+        : `本机上次失败（${FAILURE_LABELS[entry.code] || entry.code || '未知'}）· ${when}`,
+      failed: !entry.ok,
+      hint: entry.hint || '',
+    };
   }
 
   async function loadProviderHealth() {
@@ -563,7 +665,7 @@
     } catch {
       providerHealth = [];
     }
-    renderProviderHealth();
+    renderSourcesPage();
   }
 
   /** How many records have been archived to disk, for the settings note. */
@@ -588,7 +690,7 @@
       for (const [key, label, ico] of FILTER_DEFS) {
         const b = el('button', container.id === 'filters' ? 'sideitem' : '');
         b.type = 'button';
-        const isActive = viewState.phaseFilter === key && !viewState.providerFilter;
+        const isActive = viewState.phaseFilter === key && viewState.sourceScope.scope === 'all';
         if (isActive) {
           b.classList.add('active');
           b.setAttribute('aria-current', 'page');
@@ -604,17 +706,17 @@
       }
     }
 
-    $$('[data-source]').forEach((b) => {
-      const p = b.dataset.source;
-      const isActive = viewState.providerFilter === p;
+    // Category buttons in the sidebar: one per kind, not one per netdisk.
+    $$('[data-source-kind]').forEach((b) => {
+      const isActive = viewState.sourceScope.scope === 'kind' && viewState.sourceScope.kind === b.dataset.sourceKind;
       b.classList.toggle('active', isActive);
       b.setAttribute('aria-pressed', String(isActive));
     });
 
-    for (const p of ['quark', 'baidu', 'uc', 'xunlei']) {
-      const countNode = $('#' + p + '-count');
+    for (const group of sourceGroups()) {
+      const countNode = $('#scope-' + group.kind + '-count');
       if (countNode) {
-        countNode.textContent = String(counted.filter((j) => j.link && j.link.provider === p).length);
+        countNode.textContent = String(counted.filter((j) => sourceKind(j.link) === group.kind).length);
       }
     }
 
@@ -659,8 +761,6 @@
         for (const id of purgeable) {
           purgedIds.add(id);
           jobs.delete(id);
-          const idx = jobOrder.indexOf(id);
-          if (idx !== -1) jobOrder.splice(idx, 1);
         }
         if (persistedRemoved === totalPurgeable) {
           notify(`已删除 ${persistedRemoved} 个任务记录`);
@@ -680,6 +780,7 @@
 
   function render() {
     renderFilters();
+    updateSourceCounts();
     const filtered = visibleJobs();
     const allJobs = Array.from(jobs.values());
     const rows = $('#rows');
@@ -693,7 +794,7 @@
     // old offset there leaves row 0 clipped above the viewport.
     const listKey = JSON.stringify({
       phase: viewState.phaseFilter,
-      provider: viewState.providerFilter,
+      scope: viewState.sourceScope,
       query: viewState.query,
       sort: viewState.sort,
       archive: viewState.archiveView,
@@ -772,8 +873,13 @@
       // Metadata line
       const meta = el('div', 'rowmeta');
       const source = el('span', 'source');
-      const providerId = (j.link && j.link.provider) || 'quark';
-      source.append(el('span', 'providerdot ' + providerId), document.createTextNode((PROVIDER_LABELS[providerId] || '网盘') + '　·　' + getJobSizeOrStatusText(j)));
+      const providerId = sourceId(j.link);
+      const dot = el('span', 'providerdot');
+      dot.style.background = sourceView(providerId)?.color || '#94a3b8';
+      // The size has its own node so a progress tick can rewrite it in place.
+      // Without that the byte count froze at whatever it said when the row was drawn.
+      const sourceText = el('span', 'sourcetext', sourceLabel(j.link) + '　·　' + getJobSizeOrStatusText(j));
+      source.append(dot, sourceText);
 
       const metrics = el('span', 'metrics');
       if (phase === 'downloading' && prog.speed > 0) {
@@ -833,6 +939,11 @@
         actions.append(btn('重新取链 ' + name, 'refresh', (e) => { e.stopPropagation(); actJob(j.id, 'retry'); }));
       } else if (phase === 'needs-human') {
         actions.append(btn(humanInfo(j).action + ' ' + name, 'open', (e) => { e.stopPropagation(); actJob(j.id, 'human'); }));
+        // A media job waits for the user to sign in somewhere. Once they have,
+        // the job has to be told to run again.
+        if (j.link && j.link.kind !== 'netdisk') {
+          actions.append(btn('继续 ' + name, 'play', (e) => { e.stopPropagation(); actJob(j.id, 'resume'); }));
+        }
       } else if (phase === 'done') {
         actions.append(btn('打开 ' + name + ' 所在目录', 'folder', async (e) => {
           e.stopPropagation();
@@ -856,7 +967,7 @@
     const emptyNode = $('#jobs-empty');
     if (emptyNode) emptyNode.hidden = true;
     if (!filtered.length) {
-      const filtering = Boolean(viewState.query) || viewState.providerFilter !== null || viewState.phaseFilter !== 'all';
+      const filtering = Boolean(viewState.query) || viewState.sourceScope.scope !== 'all' || viewState.phaseFilter !== 'all';
       const emptyDiv = el('div', 'empty');
       // An empty archive is not "no tasks yet", and an empty filter is not an
       // empty list. Each one gets its own words and its own way out.
@@ -870,7 +981,7 @@
           'p',
           '',
           filtering
-            ? '换一个状态或网盘来源，或者清空筛选。'
+            ? '换一个状态或来源类别，或者清空筛选。'
             : viewState.archiveView
               ? '把已完成的任务归档，它们会从这里消失，需要时再恢复。'
               : '添加一个分享链接，开始你的第一个下载。'
@@ -881,7 +992,7 @@
           btn('清空筛选', null, () => {
             if ($('#search')) $('#search').value = '';
             viewState.query = '';
-            viewState.providerFilter = null;
+            viewState.sourceScope = { scope: 'all' };
             viewState.phaseFilter = 'all';
             render();
           }, 'button secondary')
@@ -948,8 +1059,12 @@
     }
 
     if (viewState.page === 'tasks' && $('#page-title')) {
-      if (viewState.providerFilter) {
-        $('#page-title').textContent = PROVIDER_LABELS[viewState.providerFilter] || '网盘任务';
+      const scope = viewState.sourceScope;
+      if (scope.scope === 'provider') {
+        $('#page-title').textContent = sourceView(scope.id)?.label || '全部任务';
+      } else if (scope.scope === 'kind') {
+        const group = sourceGroups().find((g) => g.kind === scope.kind);
+        $('#page-title').textContent = group ? group.label : '全部任务';
       } else {
         const found = FILTER_DEFS.find((f) => f[0] === viewState.phaseFilter);
         $('#page-title').textContent = (found && found[1]) || '全部任务';
@@ -998,7 +1113,7 @@
       'Unidownload 诊断信息',
       '时间: ' + new Date().toISOString(),
       '任务: ' + job.id,
-      '网盘: ' + (link.provider || '?') + ' / ' + (link.shareId || '?'),
+      '来源: ' + sourceLabel(job.link) + ' / ' + (link.shareId || link.url || '?'),
       '提取码: ' + (link.passcode ? '[已隐藏]' : '无'),
       '阶段: ' + (state.phase || '?'),
       state.step !== undefined ? `失败步骤: 第 ${state.step + 1} 步（${state.verb || '?'}）` : null,
@@ -1039,7 +1154,7 @@
     const hero = el('div', 'drawerhero');
     hero.append(
       el('h3', '', name),
-      el('p', '', (PROVIDER_LABELS[j.link && j.link.provider] || '未知网盘') + ' · ' + getJobStatusLabel(j))
+      el('p', '', sourceLabel(j.link) + ' · ' + getJobStatusLabel(j))
     );
 
     const tabs = el('nav', 'tabs');
@@ -1065,7 +1180,7 @@
     const sizeText = prog.total > 0 ? `${formatBytes(prog.completed)} / ${formatBytes(prog.total)}` : getJobSizeOrStatusText(j);
     const items = [
       ['当前状态', getJobStatusLabel(j)],
-      ['网盘来源', (j.link && PROVIDER_LABELS[j.link.provider]) || '未知'],
+      ['来源', sourceLabel(j.link)],
       ['文件大小 / 状态', sizeText],
       ['保存位置', (currentSettings.aria2 && currentSettings.aria2.dir) || '默认下载目录'],
       // Historical jobs carry no delivery metadata, so only real aria2 progress
@@ -1179,6 +1294,9 @@
         }, 'button secondary small'));
       } else if (phase === 'needs-human') {
         tools.append(btn(humanInfo(j).action, 'open', () => actJob(j.id, 'human'), 'button secondary small'));
+        if (j.link && j.link.kind !== 'netdisk') {
+          tools.append(btn('继续', 'play', () => actJob(j.id, 'resume'), 'button secondary small'));
+        }
         if (humanInfo(j).label === '需先转存') {
           tools.append(btn('前往转存设置', 'settings', () => {
             showPage('settings');
@@ -1199,7 +1317,7 @@
         }
       }
 
-      if (phase === 'needs-human' && state.reason === 'login' && PROVIDER_LOGIN[j.link && j.link.provider] === 'window') {
+      if (phase === 'needs-human' && state.reason === 'login' && sourceLoginKind(j.link) === 'window') {
         tools.append(btn('我已登录，继续', 'play', async () => {
           try {
             const res = await api.continueAfterLogin(j.id);
@@ -1316,7 +1434,7 @@
 
     const heroP = drawer.querySelector('.drawerhero p');
     if (heroP) {
-      heroP.textContent = (PROVIDER_LABELS[j.link && j.link.provider] || '未知网盘') + ' · ' + getJobStatusLabel(j);
+      heroP.textContent = sourceLabel(j.link) + ' · ' + getJobStatusLabel(j);
     }
 
     if (viewState.detailTab === 'overview') {
@@ -1376,7 +1494,12 @@
           if (behTab) behTab.click();
           const transferInput = $('#allow-transfer');
           if (transferInput) transferInput.focus();
-        } else if (reason === 'login' && PROVIDER_LOGIN[j.link && j.link.provider] === 'cookie') {
+        } else if (reason === 'login' && j.link && j.link.kind !== 'netdisk') {
+          // A media job opens the site in the app's own window. The session
+          // keeps the cookie, so the next attempt has a login.
+          const res = await api.login(id);
+          notify((res && res.message) || '已打开站点窗口');
+        } else if (reason === 'login' && sourceLoginKind(j.link) === 'cookie') {
           const res = await api.login(id);
           notify((res && res.message) || '已触发登录');
         } else {
@@ -1406,7 +1529,7 @@
 
     const copy = {
       tasks: ['全部任务', '文件在哪里，下载到哪一步，一眼看清。'],
-      sources: ['网盘来源', '百度、夸克、UC、迅雷统一管理，按任务显示登录、转存和手动处理入口。'],
+      sources: ['下载来源', '网盘、视频页面和直链分门别类，每一类的能力与这台机器上最近一次的真实结果都在这里。'],
       settings: ['设置', '把下载器调整成你习惯的样子。'],
     };
     if (copy[next]) {
@@ -1432,6 +1555,117 @@
 
   /* ---------------------------------------------------------------- Settings --- */
 
+  /* ---------------------------------------------------------------- Media settings --- */
+
+  /**
+   * One engine row per category, not per source.
+   *
+   * A category whose sources all use the same single engine gets a plain
+   * line, so the four netdisks do not become four identical dropdowns. Only
+   * a source that really supports two engines gets a choice, because the
+   * other combinations cannot run.
+   */
+  function renderEngineOverrides() {
+    const host = $('#engine-overrides');
+    if (!host) return;
+    host.replaceChildren();
+    const overrides = currentSettings.engineOverrides || {};
+
+    for (const group of sourceGroups()) {
+      const views = sourceViews.filter((view) => view.kind === group.kind);
+      if (!views.length) continue;
+      const engines = new Set(
+        views.flatMap((view) => (view.engines && view.engines.length ? view.engines : [view.engine]))
+      );
+      // One engine for the whole category: state it, do not ask.
+      if (engines.size === 1 && views.every((view) => (view.engines || []).length <= 1)) {
+        const row = el('div', 'enginerow');
+        row.append(el('span', 'enginelabel', group.label), el('span', 'enginevalue', [...engines][0]));
+        host.append(row);
+        continue;
+      }
+      for (const view of views) {
+        const list = view.engines && view.engines.length ? view.engines : [view.engine];
+        const row = el('div', 'enginerow');
+        row.append(el('span', 'enginelabel', view.label));
+        const select = el('select');
+        select.id = 'engine-' + view.id;
+        const options = [['', '默认（' + view.engine + '）']].concat(list.map((engine) => [engine, engine]));
+        for (const [value, text] of options) {
+          const option = el('option', '', text);
+          option.value = value;
+          select.append(option);
+        }
+        select.value = overrides[view.id] || '';
+        row.append(select);
+        host.append(row);
+      }
+    }
+  }
+
+  /**
+   * Read the engine choices back.
+   *
+   * A source left on its default is written down as null, not skipped. The
+   * store merges the patch onto what it has, so staying silent would let an
+   * override the user just removed survive every save.
+   */
+  function collectEngineOverrides() {
+    const overrides = {};
+    for (const view of sourceViews) {
+      const node = $('#engine-' + view.id);
+      const value = node ? node.value : '';
+      overrides[view.id] = value === 'aria2' || value === 'yt-dlp' ? value : null;
+    }
+    return overrides;
+  }
+
+  function syncMediaUi() {
+    const media = currentSettings.media || {};
+    if ($('#media-format')) $('#media-format').value = media.format || '';
+    if ($('#media-audio')) $('#media-audio').checked = Boolean(media.audioFormat);
+    if ($('#media-audio-format')) $('#media-audio-format').value = media.audioFormat || '';
+    if ($('#media-thumbnail')) $('#media-thumbnail').checked = Boolean(media.embedThumbnail);
+    if ($('#media-metadata')) $('#media-metadata').checked = Boolean(media.embedMetadata);
+    if ($('#media-subs')) $('#media-subs').checked = Boolean(media.writeSubs);
+    if ($('#media-sublangs')) $('#media-sublangs').value = media.subLangs || '';
+    if ($('#media-playlist')) $('#media-playlist').checked = Boolean(media.playlist);
+    if ($('#ffmpeg-path')) $('#ffmpeg-path').value = media.ffmpegPath || '';
+    if ($('#ytdlp-path')) $('#ytdlp-path').value = currentSettings.ytdlpPath || '';
+    if ($('#ytdlp-channel')) $('#ytdlp-channel').value = currentSettings.ytdlpChannel || 'stable';
+    renderEngineOverrides();
+  }
+
+  /** The tools the media path needs, and whether they are there. */
+  async function refreshToolStatus() {
+    try {
+      const status = await api.ytdlpStatus();
+      const node = $('#ytdlp-status');
+      if (node) {
+        node.textContent =
+          status && status.running
+            ? `yt-dlp ${status.version || ''} · ${status.path || ''}`
+            : `yt-dlp 没找到：${(status && status.error) || '未知原因'}`;
+      }
+    } catch {
+      const node = $('#ytdlp-status');
+      if (node) node.textContent = 'yt-dlp 状态查不到';
+    }
+    try {
+      const status = await api.ffmpegStatus();
+      const node = $('#ffmpeg-status');
+      if (node) {
+        node.textContent =
+          status && status.running
+            ? `ffmpeg ${status.version || ''}${status.ffprobe ? ' · ffprobe 在' : ' · 没有 ffprobe，提取音频不可用'}`
+            : `ffmpeg 没找到：${(status && status.error) || '未知原因'}`;
+      }
+    } catch {
+      const node = $('#ffmpeg-status');
+      if (node) node.textContent = 'ffmpeg 状态查不到';
+    }
+  }
+
   function syncSettingsUi() {
     const s = currentSettings;
     if ($('#delivery')) $('#delivery').value = s.delivery || 'aria2';
@@ -1447,7 +1681,9 @@
     if ($('#rpc-token')) $('#rpc-token').value = aria2.token || '';
 
     updateEngineView();
+    syncMediaUi();
     refreshAria2Status();
+    refreshToolStatus();
   }
 
   function updateEngineView() {
@@ -1522,6 +1758,24 @@
       },
       allowTransfer: Boolean($('#allow-transfer') && $('#allow-transfer').checked),
       autoSubmit: Boolean($('#auto-submit') && $('#auto-submit').checked),
+      media: {
+        format: ($('#media-format') && $('#media-format').value) || '',
+        audioFormat:
+          $('#media-audio') && $('#media-audio').checked
+            ? (($('#media-audio-format') && $('#media-audio-format').value) || 'mp3')
+            : '',
+        audioQuality: '',
+        mergeFormat: '',
+        embedThumbnail: Boolean($('#media-thumbnail') && $('#media-thumbnail').checked),
+        embedMetadata: Boolean($('#media-metadata') && $('#media-metadata').checked),
+        writeSubs: Boolean($('#media-subs') && $('#media-subs').checked),
+        subLangs: ($('#media-sublangs') && $('#media-sublangs').value.trim()) || '',
+        playlist: Boolean($('#media-playlist') && $('#media-playlist').checked),
+        ffmpegPath: ($('#ffmpeg-path') && $('#ffmpeg-path').value.trim()) || '',
+      },
+      ytdlpPath: ($('#ytdlp-path') && $('#ytdlp-path').value.trim()) || '',
+      ytdlpChannel: ($('#ytdlp-channel') && $('#ytdlp-channel').value) || 'stable',
+      engineOverrides: collectEngineOverrides(),
     };
 
     if (next.delivery === 'aria2' && next.aria2Mode === 'external' && !next.aria2.domain) {
@@ -1586,11 +1840,6 @@
     dialog.showModal();
     const input = $('#link-input') || $('#share');
     if (input) input.focus();
-  }
-
-  /** @returns {string | null} the delivery picked in the new-task dialog */
-  function selectedDelivery() {
-    return currentSettings.delivery || 'aria2';
   }
 
   async function submitTask(raw) {
@@ -1740,33 +1989,143 @@
 
   /* ---------------------------------------------------------------- Sources Page Init --- */
 
+  /**
+   * Fetch the source registry and draw everything that comes from it.
+   *
+   * The sidebar list, the sources page, the capability table and the counters
+   * all read from here, so adding a source touches one table instead of a
+   * dozen places.
+   */
+  async function loadSources() {
+    try {
+      const views = await api.sources();
+      sourceViews = Array.isArray(views) ? views : [];
+    } catch {
+      sourceViews = [];
+    }
+    sourceMap = new Map(sourceViews.map((view) => [view.id, view]));
+    renderSourceFilters();
+    renderSourcesPage();
+    render();
+  }
+
+  /**
+   * The sources page: one card per source, grouped by category.
+   *
+   * The card also carries the last outcome that actually happened on this
+   * machine, so a netdisk's capability and its real-world result live in one
+   * place instead of a table in the settings page and a list here.
+   */
   function renderSourcesPage() {
     const list = $('#source-list');
     if (!list) return;
     list.replaceChildren();
 
-    const sources = [
-      ['quark', '夸克网盘', '分享文案与提取码识别 · 浏览器登录'],
-      ['baidu', '百度网盘', '支持登录处理 · 超过 50MB 转存需要开启授权'],
-      ['uc', 'UC 网盘', '分享页直接取链 · 下载携带会话登录态 · 403 时可登录后重新取链'],
-      ['xunlei', '迅雷云盘', '应用窗口登录 → 授权转存 → 我的云盘选文件 → Aria2 取链'],
-    ];
+    const live = Array.from(jobs.values()).filter((j) => !isArchived(j));
 
-    for (const [key, title, desc] of sources) {
-      const row = el('article', 'sourceentry');
-      const logo = el('div', 'providerlogo ' + key, title.slice(0, 1));
-      const content = el('div');
-      const heading = el('h3', '', title);
-      if (['uc', 'xunlei'].includes(key)) heading.append(el('span', 'badge', '实验性驱动'));
-      if (key === 'xunlei') heading.append(el('span', 'badge', '需转存 / 手动取链'));
-      content.append(heading, el('p', '', desc));
+    for (const group of sourceGroups()) {
+      const views = sourceViews.filter((view) => view.kind === group.kind);
+      if (!views.length) continue;
+      const section = el('section', 'sourcegroup');
+      section.append(el('h2', 'sourcegrouphead', group.label));
+      for (const view of views) section.append(renderSourceCard(view, live));
+      list.append(section);
+    }
+  }
 
-      row.append(
-        logo,
-        content,
-        btn('查看相关任务', 'arrow', () => setProviderFilter(key), 'button secondary small')
-      );
-      list.append(row);
+  /**
+   * The sources page shows how many tasks each source has. Only the number
+   * moves while the app runs, so update it in place instead of rebuilding
+   * the cards.
+   */
+  function updateSourceCounts() {
+    const counts = new Map();
+    for (const job of jobs.values()) {
+      if (isArchived(job)) continue;
+      const id = sourceId(job.link);
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    for (const card of $$('#source-list [data-source-card]')) {
+      const node = card.querySelector('.sourcecount');
+      if (!node) continue;
+      const count = counts.get(card.dataset.sourceCard) || 0;
+      node.textContent = count ? `${count} 个任务` : '还没有任务';
+    }
+  }
+
+  /**
+   * @param {any} view  一条来源注册表视图
+   * @param {any[]} live 本机还没归档的任务
+   * @returns {HTMLElement}
+   */
+  function renderSourceCard(view, live) {
+    const row = el('article', 'sourceentry');
+    row.dataset.sourceCard = view.id;
+
+    const logo = el('div', 'providerlogo', view.label.slice(0, 1));
+    logo.style.background = view.color;
+
+    const body = el('div', 'sourcebody');
+    const heading = el('h3');
+    heading.append(document.createTextNode(view.label));
+    const badges = view.badges || [];
+    // A source that spells out its own caveat does not also need the generic
+    // 「实验性驱动」 badge next to it.
+    if (view.experimental && badges.length === 0) heading.append(el('span', 'badge', '实验性驱动'));
+    for (const badge of badges) heading.append(el('span', 'badge', badge));
+    body.append(heading, el('p', 'sourcedesc', view.desc));
+
+    const meta = el('p', 'sourcemeta');
+    const capability = view.capability || { grade: '未记录', note: '' };
+    // 「已验证」和「实验性」要么和徽标重复，要么紧挨着「本机还没跑过」读起来
+    // 自相矛盾，所以不重复说。
+    const note = capability.note && !['已验证', '实验性'].includes(capability.note) ? ' · ' + capability.note : '';
+    meta.append(el('span', 'sourcegrade', capability.grade + note));
+    // Only a netdisk has a share page that can fail; a media job has no
+    // netdisk to be healthy or not.
+    if (view.kind === 'netdisk') {
+      const health = healthText(view.id);
+      const node = el('span', 'sourcehealth' + (health.failed ? ' failed' : ''), health.text);
+      if (health.hint) node.title = health.hint;
+      meta.append(node);
+    }
+    body.append(meta);
+
+    const actions = el('div', 'sourceactions');
+    const count = live.filter((j) => sourceId(j.link) === view.id).length;
+    actions.append(el('span', 'sourcecount', count ? `${count} 个任务` : '还没有任务'));
+    // An action, not a toggle: it navigates to the task list, so it carries
+    // no pressed state.
+    const action = btn('查看 ' + view.label + ' 的任务', 'arrow', () => setSourceScope({ scope: 'provider', id: view.id }), 'button secondary small');
+    action.dataset.source = view.id;
+    actions.append(action);
+
+    row.append(logo, body, actions);
+    return row;
+  }
+
+  /**
+   * The sidebar list of sources.
+   *
+   * It used to be four hand-written buttons in the markup. A new source had to
+   * be added in the markup, in two renderer arrays and in the stylesheet. It
+   * then became one button per netdisk, so every provider the app learned to
+   * read added a row to the sidebar. Now it is one button per category: the
+   * four netdisks share a single row.
+   */
+  function renderSourceFilters() {
+    const host = $('#source-filters');
+    if (!host) return;
+    host.replaceChildren();
+    for (const group of sourceGroups()) {
+      const button = el('button', 'sideitem');
+      button.type = 'button';
+      button.dataset.sourceKind = group.kind;
+      button.append(icon(group.icon));
+      const counter = el('span', 'counter', '0');
+      counter.id = 'scope-' + group.kind + '-count';
+      button.append(document.createTextNode(group.label), counter);
+      host.append(button);
     }
   }
 
@@ -1823,6 +2182,12 @@
       }
     }
 
+    // The size on the left of the meta line moves with the download too.
+    const sourceText = row.querySelector('.rowmeta .source .sourcetext');
+    if (sourceText) {
+      sourceText.textContent = sourceLabel(job.link) + '　·　' + getJobSizeOrStatusText(job);
+    }
+
     updateTotalSpeed();
     return true;
   }
@@ -1831,7 +2196,6 @@
     if (!job || typeof job !== 'object' || !job.id || purgedIds.has(job.id)) return;
     const id = job.id;
     const isNew = !jobs.has(id);
-    if (isNew) jobOrder.unshift(id);
     const previousJob = jobs.get(id);
     const previousPhase = previousJob && previousJob.state ? previousJob.state.phase : null;
     const currentPhase = job.state ? job.state.phase : null;
@@ -1871,7 +2235,7 @@
     // second, and announcing that would flood a screen reader.
     const live = $('#live-region');
     if (live && previousPhase !== currentPhase) {
-      const pLabel = (job.link && PROVIDER_LABELS[job.link.provider]) || '任务';
+      const pLabel = sourceLabel(job.link) || '任务';
       const sId = (job.link && job.link.shareId) || '';
       live.textContent = `${pLabel} ${sId}：${getJobStatusLabel(job)}`;
     }
@@ -1890,7 +2254,6 @@
         for (const j of existing) {
           if (!j || !j.id || purgedIds.has(j.id)) continue;
           jobs.set(j.id, j);
-          if (!jobOrder.includes(j.id)) jobOrder.push(j.id);
         }
       }
     } catch {
@@ -1903,7 +2266,15 @@
   function initListeners() {
     // Navigation rail
     $$('[data-page]').forEach((b) => (b.onclick = () => showPage(b.dataset.page)));
-    $$('[data-source]').forEach((b) => (b.onclick = () => setProviderFilter(b.dataset.source)));
+    // The source buttons are drawn from the registry, so the click is
+    // delegated instead of bound to each button.
+    const sourceHost = $('#source-filters');
+    if (sourceHost) {
+      sourceHost.onclick = (event) => {
+        const button = event.target.closest('[data-source-kind]');
+        if (button) setSourceScope({ scope: 'kind', kind: button.dataset.sourceKind });
+      };
+    }
 
     // Header buttons
     const newTaskBtn = $('#new-task');
@@ -2184,8 +2555,6 @@
           for (const id of ids) {
             purgedIds.add(id);
             jobs.delete(id);
-            const idx = jobOrder.indexOf(id);
-            if (idx !== -1) jobOrder.splice(idx, 1);
           }
           if (status) {
             status.hidden = false;
@@ -2222,6 +2591,45 @@
     const saveSettingsBtn = $('#save-settings');
     if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettings);
 
+    // The media tools: check for a new yt-dlp, and point at an ffmpeg.
+    const checkYtdlp = $('#check-ytdlp');
+    if (checkYtdlp) {
+      checkYtdlp.addEventListener('click', async () => {
+        checkYtdlp.disabled = true;
+        const label = checkYtdlp.textContent;
+        checkYtdlp.textContent = '检查中…';
+        try {
+          const result = await api.ytdlpUpdate();
+          notify(result && result.ok ? result.message : `更新失败：${(result && result.message) || '未知原因'}`);
+        } catch (error) {
+          notify('更新失败：' + describeError(error));
+        } finally {
+          checkYtdlp.disabled = false;
+          checkYtdlp.textContent = label;
+          refreshToolStatus();
+        }
+      });
+    }
+
+    for (const [buttonId, inputId] of [
+      ['browse-ytdlp', 'ytdlp-path'],
+      ['browse-ffmpeg', 'ffmpeg-path'],
+    ]) {
+      const button = $('#' + buttonId);
+      if (!button) continue;
+      button.addEventListener('click', async () => {
+        try {
+          const picked = await api.chooseFile();
+          if (!picked) return;
+          const input = $('#' + inputId);
+          if (input) input.value = picked;
+          refreshToolStatus();
+        } catch (error) {
+          notify('选择文件失败：' + describeError(error));
+        }
+      });
+    }
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
       const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement && document.activeElement.tagName);
@@ -2250,7 +2658,7 @@
 
   // Initialization
   applyTheme(viewState.theme);
-  renderSourcesPage();
+  loadSources();
   initListeners();
   loadSettings();
   loadExistingJobs();

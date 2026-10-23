@@ -2,6 +2,8 @@
 
 粘贴网盘分享链接，程序在后台加载页面并取到直链，推给 aria2、剪贴板或浏览器。aria2 随应用启动，不用自己装。只在登录时打开本机 Chrome。
 
+也能直接粘贴视频网站页面或普通文件直链。视频那一路交给内置的 yt-dlp，解析、下载、音视频合并、提取音频都在它里面跑。
+
 上游是 [hmjz100/LinkSwift](https://github.com/hmjz100/LinkSwift) 这个油猴脚本。桌面版把脚本注入到内置窗口的页面主世界，并补上它需要的 `GM_*` 接口。仓库内部标识（包名 `linkswift-desktop`、`persist:linkswift` 分区、`%APPDATA%\linkswift-desktop` 数据目录、IPC 名）保持不变，所以从 LinkSwift 桌面版升级过来时旧配置、网盘登录态和未完成的下载都还在。
 
 支持夸克网盘、百度网盘、UC 网盘、迅雷云盘。UC 和迅雷的步骤表取自脚本自身的挂载点：自动点不到时窗口会留着让你点一次「下载助手」，直链照样被程序接住。UC 和迅雷驱动仍是实验性实现，界面按驱动能力显示入口，不隐藏它们的边界。
@@ -29,6 +31,28 @@ npm start
 任务卡上的状态分五种：**下载中**（带速度、连接数、剩余时间）、**已暂停**、**需你操作一步**（卡上直接写要做什么，并给直达按钮）、**已失败**、**已完成**；一条任务里部分文件失败时显示「部分完成 N 失败 / M 完成」。下载中速度归零满 60 秒会标「可能已停滞」，只提示，不自动重试。
 
 下载中可以「暂停」「继续」「取消」。直接关掉软件也不会丢进度：内置 aria2 把会话写在 `%APPDATA%\linkswift-desktop\aria2\session.txt`，下次打开按 GID 找回，没暂停过的任务自动接着下。
+
+## 媒体与直链
+
+除了网盘分享链接，程序还认两种地址。
+
+**视频网站页面**。粘一个 YouTube、B 站之类的页面地址，程序交给内置的 yt-dlp：它负责解析出可下载的流、挑画质、下载、并且用 ffmpeg 把视频流和音频流合并成一个文件。这一路不需要开浏览器页面，除非那个站点要登录。
+
+**普通文件直链**。粘一个以常见文件扩展名结尾的地址就行，用 aria2 下，多线程。
+
+媒体这一路是单连接的，吃不到 aria2 的 16 线程分片。这是 yt-dlp 原生下载器的性质，不是配置问题。
+
+暂停是把 yt-dlp 的进程停掉，`.part` 半成品留在原地；继续是带 `--continue` 重开，yt-dlp 从半成品接着下。取消会把半成品删掉。
+
+站点解析器会失效，这是 yt-dlp 的常态。程序自己管 yt-dlp 的更新：拉发行版、按发行版附带的 `SHA2-256SUMS` 校验、换文件。**不会**用 yt-dlp 自己的 `-U`，上游发行说明明确说过旧版可执行文件有中间人攻击风险。
+
+ffmpeg 不在安装包里。音视频合并、提取音频、嵌封面这些要 ffmpeg，装一个放 PATH 上就能用；没有的话这些功能不可用，其余照常。
+
+需要登录时，程序在自己的窗口里打开那个站点，登录态留在应用的会话里，导出给 yt-dlp 用。网盘那一套浏览器能力，顺手变成了媒体的登录能力。
+
+设置 → 媒体 这一页管媒体这一路：画质（留空由 yt-dlp 自己挑）、提取音频、嵌入封面与元数据、字幕、整个播放列表、ffmpeg 路径、yt-dlp 路径与更新频道。同一页还有「每个来源用哪个引擎」，默认按来源自己定，改掉之后 aria2 就不再是前提。
+
+界面上每一份来源清单都从注册表画。侧栏那六条、来源页、能力表、筛选和计数，都是同一张表，加一种来源只改一处。
 
 ## 界面
 
@@ -75,6 +99,12 @@ npm run check             # 一次跑完下面的语法检查、全部检查与 
 npm run check:share-link  # 链接与分享文案解析（四种网盘）、批量粘贴与去重
 npm run check:aria2       # aria2.addUri 的选项构造
 npm run check:job         # 任务状态机：多文件合并、大文件转存、登录过期、链接失效、手动兜底、停滞、重试拉新脚本
+npm run check:source-parse # 来源判定：四种网盘、视频页面、普通文件直链、混合粘贴
+npm run check:media-settings # 媒体设置：存盘再读回来，以及它变成 yt-dlp 参数
+npm run check:ytdlp-args  # yt-dlp 命令行：固定参数、危险开关一个都不能有、输出名与路径转义
+npm run check:ytdlp-progress # yt-dlp 进度解析：真实输出行、NA 的处理、Windows 路径不被转义
+npm run check:ytdlp-errors # yt-dlp 报错分类：登录、地域限制、画质、限流、ffmpeg 缺失、网络
+npm run check:ytdlp-lifecycle # 真实 yt-dlp：下载 → 暂停 → 续传 → 字节一致（本地慢速 HTTP 服务，不联网）
 npm run check:lifecycle   # 真实 aria2：暂停 → 退出 → 重启接着下 → 字节一致（本地慢速 HTTP 服务，不联网）
 npm run check:archive     # 500 条上限、归档文件格式、旧记录兼容
 npm run check:provider-health # 网盘能力表：只留最近一条，文件损坏时退回「未验证」
@@ -94,5 +124,7 @@ npm run probe:throttle    # 隐藏窗口的定时器节流，以及关掉节流�
 AGPL-3.0-or-later。上游脚本同样是 AGPL-3.0-or-later，署名见 `NOTICE`。
 
 内置的 aria2 是独立程序、以 GPL-2.0-or-later 分发，许可证全文随二进制放在 `resources/aria2/COPYING`。
+
+内置的 yt-dlp 是独立程序。源码是 Unlicense（公有领域），但 Windows 上那个自包含的 `yt-dlp.exe` 是 PyInstaller 打的，含 GPLv3+ 的代码，所以按 GPLv3+ 分发。第三方的许可证全文随二进制放在 `resources/ytdlp/THIRD_PARTY_LICENSES.txt`，发行版的校验和放在 `resources/ytdlp/SHA2-256SUMS`。本仓库是 AGPL-3.0-or-later，与 GPLv3+ 兼容。
 
 分发本程序时，`NOTICE` 里列出的上游作者署名与这两份许可证必须一并保留。

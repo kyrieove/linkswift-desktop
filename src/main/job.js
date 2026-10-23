@@ -9,9 +9,16 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
 const { INTERNAL } = require('../shared/protocol');
-const { PROVIDERS, getProvider, parseShareLinks } = require('../shared/providers');
+const { PROVIDERS, getProvider } = require('../shared/providers');
+const { buildSource, getSource, normalizeSource, parseSources, sourceKey, sourceViews } = require('../shared/sources');
+const { mediaOptions } = require('../shared/media-options');
 const aria2 = require('./aria2');
+const { createTransfer, resolveEngineId } = require('./engines');
+const { readVersion } = require('./engines/ytdlp-transfer');
+const { resolveBinary, updateBinary } = require('./ytdlp-binary');
+const { status: ffmpegStatus } = require('./ffmpeg');
 const { performChromeLogin } = require('./chrome-login');
+const { exportSessionCookies } = require('./media-cookies');
 
 const DEBUG = process.env.LINKSWIFT_DEBUG === '1';
 if (DEBUG) console.log('[DBG] LINKSWIFT_DEBUG enabled');
@@ -725,37 +732,77 @@ async function proxyRequest({ url, method, headers, body, provider, allowLocalFi
   throw new Error('重定向过多');
 }
 
+/**
+ * 从地址里取文件名。取不到就返回 null，让调用方报错而不是写一个乱名字。
+ *
+ * @param {string} raw
+ * @returns {string | null}
+ */
+function fileNameFromUrl(raw) {
+  try {
+    const url = new URL(raw);
+    const name = path.basename(decodeURIComponent(url.pathname)).trim();
+    return name && name !== '.' && name !== '..' ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 class Job {
   /**
    * @param {{
    *   id?: string,
    *   createdAt?: number,
-   *   link: import('../shared/protocol').ShareLink,
+   *   link: import('../shared/protocol').Source,
    *   deliver: (files: import('../shared/protocol').ExtractedFile[]) => Promise<{
    *     delivery: string,
    *     files: import('../shared/protocol').ExtractedFile[],
-   *     gids?: Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>,
+   *     run?: import('./engines/aria2-transfer').TransferRun,
    *     config?: import('../shared/protocol').Aria2Config,
    *   }>,
+   *   transfer?: import('./engines/aria2-transfer').Aria2Transfer | import('./engines/ytdlp-transfer').YtDlpTransfer,
    *   emit: (job: Job) => void,
    *   onDone: (contentsId: number) => void,
    *   persist?: (job: Job) => void,
    *   allowTransfer?: () => boolean,
    *   config?: () => import('../shared/protocol').Aria2Config | null,
+   *   settings?: () => import('../shared/protocol').Settings,
+   *   downloadDir?: () => string,
+   *   partition?: string,
    *   script?: { source: string, version: string, origin: string } | null,
    *   session?: import('electron').Session,
    * }} options
    */
-  constructor({ id, createdAt, link, deliver, emit, onDone, persist, allowTransfer, config, script, session }) {
+  constructor({
+    id,
+    createdAt,
+    link,
+    deliver,
+    transfer,
+    emit,
+    onDone,
+    persist,
+    allowTransfer,
+    config,
+    settings,
+    downloadDir,
+    partition,
+    script,
+    session,
+  }) {
     this.id = id ?? randomUUID();
     this.createdAt = createdAt ?? Date.now();
     this.link = link;
     this.deliver = deliver;
+    this.transfer = transfer ?? null;
     this.emit = emit;
     this.onDone = onDone;
     this.persist = persist ?? (() => {});
     this.allowTransfer = allowTransfer ?? (() => false);
     this.config = config ?? (() => null);
+    this.settings = settings ?? (() => ({}));
+    this.downloadDir = downloadDir ?? (() => '');
+    this.partition = partition;
     this.session = session;
 
     /** @type {import('../shared/protocol').JobPhase} */
@@ -774,8 +821,8 @@ class Job {
     this.pendingFiles = [];
     /** @type {import('../shared/protocol').ExtractedFile[]} */
     this.files = [];
-    /** @type {Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>} */
-    this.gids = [];
+    /** @type {import('./engines/aria2-transfer').TransferRun | null} */
+    this.run = null;
     /** @type {import('../shared/protocol').DownloadProgress[]} */
     this.progress = [];
     /** @type {import('../shared/protocol').Aria2Config | null} */
@@ -888,8 +935,11 @@ class Job {
     this.setState({ phase: 'needs-human', reason, ...extra });
     if (reason === 'login') {
       const provider = getProvider(this.link.provider);
+      // A media or direct job has no netdisk provider, so there is no Chrome
+      // login to import. The app's own window takes the site instead.
       if (provider?.loginKind === 'window') this.openLoginPage(provider);
-      else this.handleChromeLogin();
+      else if (provider) this.handleChromeLogin();
+      else this.openMediaWindow();
       return;
     }
     this.window?.show();
@@ -1004,6 +1054,38 @@ class Job {
   reveal() {
     this.window?.show();
     this.window?.focus();
+  }
+
+  /**
+   * 媒体任务的登录窗口。
+   *
+   * 用应用自己的分区，所以用户在这里过完验证，cookie 就留在会话里，
+   * 下一次尝试可以直接导出给 yt-dlp。网盘那一套浏览器能力，顺手变成媒体的登录能力。
+   */
+  async openMediaWindow() {
+    if (!this.window || this.window.isDestroyed()) {
+      this.window = new BrowserWindow({
+        show: true,
+        width: 1100,
+        height: 800,
+        title: '登录 · 媒体下载',
+        webPreferences: {
+          partition: this.partition,
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+          backgroundThrottling: false,
+        },
+      });
+      this.contentsId = this.window.webContents.id;
+    }
+    try {
+      await this.window.loadURL(this.link.url);
+    } catch (error) {
+      if (DEBUG) console.log(`[DBG job ${this.id}] media window failed: ${error.message}`);
+    }
+    this.window.show();
+    this.window.focus();
   }
 
   close() {
@@ -1423,6 +1505,74 @@ class Job {
   }
 
   /**
+   * 媒体来源。地址交给 yt-dlp，解析、下载、后处理都在它那边跑。
+   *
+   * 这一路没有浏览器页面，所以没有取链步骤，直接进引擎。
+   */
+  async startMedia() {
+    if (!this.transfer) {
+      this.fail('media-tool-missing', '这个来源要用 yt-dlp，但没找到它的可执行文件。在设置里指定路径试试。');
+      return;
+    }
+    this.setState({ phase: 'extracting' });
+    try {
+      // 登录态只能靠 cookie 文件带过去，所以起进程之前先导一次。
+      await this.exportMediaCookies();
+      const run = await this.transfer.start({ url: this.link.url, dir: this.downloadDir() });
+      this.run = run;
+      this.setState({ phase: 'downloading', files: [], progress: [] });
+      this.startPolling();
+    } catch (error) {
+      this.fail('media-tool-missing', error.message);
+    }
+  }
+
+  /**
+   * 把会话里的 cookie 导出给 yt-dlp。
+   *
+   * yt-dlp 读不到 Electron 的分区，它只认 `--cookies <file>` 给的 Netscape 格式
+   * 文件。用户在这个应用自己的窗口里登录完，cookie 留在会话里，只有导出成
+   * 文件交给它，下一次尝试才带得上登录态。
+   *
+   * 每跑一次都重新导：用户在窗口里刚登录过的那一次，要能带上。没有 cookie
+   * 就不写文件，也不传这个参数。
+   *
+   * @returns {Promise<string | null>} cookie 文件的路径，没有 cookie 时是 null
+   */
+  async exportMediaCookies() {
+    // 只有 yt-dlp 引擎有 options，别的引擎没有 cookie 参数可设。
+    if (!this.session || !this.transfer || !this.transfer.options) return null;
+    try {
+      const file = await exportSessionCookies({
+        session: this.session,
+        url: this.link.url,
+        userDataDir: app.getPath('userData'),
+        fileName: `media-cookies-${this.id}.txt`,
+      });
+      this.transfer.options.cookiesFile = file || '';
+      return file;
+    } catch (error) {
+      if (DEBUG) console.log(`[DBG job ${this.id}] cookie export failed: ${error.message}`);
+      this.transfer.options.cookiesFile = '';
+      return null;
+    }
+  }
+
+  /**
+   * 直链来源。一个普通的文件地址，文件名从地址里取。
+   */
+  async startDirect() {
+    const name = fileNameFromUrl(this.link.url);
+    if (!name) {
+      this.fail('media-unsupported', `这个地址看不出文件名：${this.link.url}`);
+      return;
+    }
+    const file = { name, url: this.link.url, headers: {} };
+    this.setState({ phase: 'linked', files: [file] });
+    await this.deliverNow([file]);
+  }
+
+  /**
    * The script pushes each file of a folder with its own aria2.addUri, so the
    * pushes arrive one at a time and stop when the window goes away. Collect them
    * for a moment and deliver once, or a folder downloads only its first file.
@@ -1512,38 +1662,30 @@ class Job {
     this.close();
     this.setState({ phase: 'delivering', files });
     try {
-      const result = await this.deliver(await this.withCookies(files));
+      const result = await this.deliver(await this.withCookies(files), this.transfer);
       // A cancel that arrives while the pushes are in flight has to undo them,
-      // or the row says 已取消 while aria2 keeps downloading.
+      // or the row says 已取消 while the downloader keeps downloading.
       if (this.settled) {
-        if (result?.delivery === 'aria2' && result.config) {
-          for (const { gid } of result.gids ?? []) {
-            await aria2.remove(result.config, gid).catch(() => {});
-          }
-        }
+        if (this.transfer && this.run) await this.transfer.cancel(this.run).catch(() => {});
         return;
       }
-      if (!result || result.delivery !== 'aria2' || !result.gids?.length) {
+      if (!result || result.delivery !== 'engine') {
+        // Clipboard and browser delivery hand the link over and stop there.
         this.settled = true;
         this.setState({ phase: 'done', files });
         return;
       }
-      const progressList = result.gids.map(({ file, gid }) => ({
-        gid,
-        name: file.name,
-        status: 'waiting',
-        totalLength: 0,
-        completedLength: 0,
-        downloadSpeed: 0,
-        connections: 0,
-        errorCode: null,
-        errorMessage: null,
-      }));
-      this.files = files;
-      this.gids = result.gids;
-      this.progress = progressList;
-      this.aria2Config = result.config;
-      this.setState({ phase: 'downloading', files, progress: progressList });
+      if (!this.transfer) throw new Error('没有可用的传输引擎');
+      const run = await this.transfer.start({
+        files: result.files,
+        url: this.link.url,
+        dir: this.downloadDir(),
+      });
+      this.run = run;
+      this.aria2Config = run.config ?? null;
+      const { rows } = await this.transfer.progress(run);
+      this.progress = rows;
+      this.setState({ phase: 'downloading', files, progress: rows });
       this.startPolling();
     } catch (error) {
       this.settled = true;
@@ -1560,36 +1702,12 @@ class Job {
    * Push every file that is not already on disk. Pushing a finished file again
    * would download a second renamed copy of it, which is worse than the failure
    * being resumed.
-   *
-   * @param {import('../shared/protocol').Aria2Config} config
    */
-  async resubmit(config) {
-    const gids = [];
-    const progress = [];
-    for (let index = 0; index < this.files.length; index += 1) {
-      const file = this.files[index];
-      const existing = this.gids[index];
-      if (this.progress[index]?.status === 'complete' && existing) {
-        gids.push(existing);
-        progress.push(this.progress[index]);
-        continue;
-      }
-      const gid = await aria2.addUri(config, (await this.withCookies([file]))[0]);
-      gids.push({ file, gid });
-      progress.push({
-        gid,
-        name: file.name,
-        status: 'waiting',
-        totalLength: 0,
-        completedLength: 0,
-        downloadSpeed: 0,
-        connections: 0,
-        errorCode: null,
-        errorMessage: null,
-      });
-    }
-    this.gids = gids;
-    this.progress = progress;
+  async resubmit() {
+    if (!this.transfer || !this.run) throw new Error('这个任务没有可重投的传输');
+    this.run = await this.transfer.retry(this.run, { rows: this.progress });
+    const { rows } = await this.transfer.progress(this.run);
+    this.progress = rows;
   }
 
   /**
@@ -1599,6 +1717,9 @@ class Job {
    * @returns {{ provider: string, ok: boolean, code?: string, hint?: string } | null}
    */
   healthOutcome() {
+    // Only a netdisk has a row in the capability table. A media job has no
+    // netdisk to be healthy or not.
+    if (this.link.kind !== 'netdisk') return null;
     const state = this.state;
     if (state.phase === 'done') return { provider: this.link.provider, ok: true };
     if (state.phase !== 'failed') return null;
@@ -1613,7 +1734,7 @@ class Job {
 
   /** aria2 may have lost the GID across its own restart; push the URI once more. */
   async readd() {
-    if (this.readded || !this.aria2Config || !this.files.length) {
+    if (this.readded || !this.transfer || !this.run || !this.files.length) {
       this.settled = true;
       this.stopPolling();
       this.setState({
@@ -1627,7 +1748,7 @@ class Job {
     }
     this.readded = true;
     try {
-      await this.resubmit(this.aria2Config);
+      await this.resubmit();
       return true;
     } catch (error) {
       this.settled = true;
@@ -1649,31 +1770,54 @@ class Job {
       this.pollTimer = null;
     }
     const tick = async () => {
-      if (this.settled || !this.aria2Config) return;
+      if (this.settled || !this.transfer || !this.run) return;
       try {
-        for (let index = 0; index < this.gids.length; index++) {
-          const { gid, file } = this.gids[index];
-          const status = await aria2.findGid(this.aria2Config, gid);
-          if (!status) {
-            await this.readd();
+        const { rows, lost } = await this.transfer.progress(this.run);
+        // The engine forgot the download. aria2 lost its session; the job has
+        // to push the link again before it can be called a failure.
+        if (lost) {
+          await this.readd();
+          return;
+        }
+        if (rows.length) {
+          this.progress = rows;
+          // A media job learns its file names from the engine, because only
+          // yt-dlp knows what it wrote.
+          if (this.transfer.id !== 'aria2') {
+            this.files = rows.map((row) => ({ name: row.name, url: row.runId, headers: {} }));
+          }
+        }
+
+        // A finished engine is over. yt-dlp is a process, so its exit is the
+        // signal; aria2 reports per file and never sets this. A paused engine
+        // is not over: it waits to be continued.
+        if (this.transfer.finished && !this.transfer.paused) {
+          const error = this.transfer.error;
+          this.stopPolling();
+          // A login problem is not a failure. The user can solve it in the
+          // app's own window, and the job runs again afterwards.
+          if (error && error.code === 'media-auth') {
+            this.settled = false;
+            this.needsHuman('login', { message: error.message, detail: error.hint });
             return;
           }
-          if (DEBUG) {
-            console.log(
-              `[DBG job ${this.id}] tellStatus(${gid}): status=${status.status} ${status.completedLength}/${status.totalLength} speed=${status.downloadSpeed} conn=${status.connections}`,
-            );
+          this.settled = true;
+          if (error) {
+            this.setState({
+              phase: 'failed',
+              code: error.code,
+              message: error.message,
+              detail: error.hint,
+              files: this.files,
+              progress: this.progress,
+            });
+            return;
           }
-          this.progress[index] = {
-            gid,
-            name: file.name,
-            status: status.status,
-            totalLength: parseInt(status.totalLength || '0', 10),
-            completedLength: parseInt(status.completedLength || '0', 10),
-            downloadSpeed: parseInt(status.downloadSpeed || '0', 10),
-            connections: parseInt(status.connections || '0', 10),
-            errorCode: status.errorCode || null,
-            errorMessage: status.errorMessage || null,
-          };
+          this.setState({ phase: 'done', files: this.files, progress: this.progress });
+          // 媒体任务登录用的窗口在自己的分区里，任务结束了就得收掉，
+          // 否则它会一直留在桌面上，直到应用退出。
+          this.close();
+          return;
         }
 
         const finished = this.progress.filter(
@@ -1703,7 +1847,8 @@ class Job {
           return;
         }
 
-        const paused = this.progress.every((item) => item.status === 'paused');
+        // A job with no progress rows yet is not paused, it has not started.
+        const paused = this.progress.length > 0 && this.progress.every((item) => item.status === 'paused');
         // A queue that is merely waiting has no speed either, so stalling is
         // judged on bytes actually arriving, not on the speed figure.
         const arrived = this.progress.reduce((sum, item) => sum + item.completedLength, 0);
@@ -1720,7 +1865,7 @@ class Job {
           progress: this.progress.slice(),
         });
       } catch (error) {
-        if (DEBUG) console.warn(`[DBG job ${this.id}] tellStatus error: ${error.message}`);
+        if (DEBUG) console.warn(`[DBG job ${this.id}] progress error: ${error.message}`);
       }
     };
 
@@ -1730,44 +1875,58 @@ class Job {
 
   /** @returns {Promise<boolean>} */
   async pause() {
-    if (!this.aria2Config || !this.gids.length) return false;
+    if (!this.transfer || !this.run) return false;
     if (this.state.phase !== 'downloading') return false;
-    for (const { gid } of this.gids) await aria2.pause(this.aria2Config, gid).catch(() => {});
+    await this.transfer.pause(this.run);
     this.setState({ phase: 'paused', files: this.files, progress: this.progress.slice() });
     return true;
   }
 
   /**
-   * Two different things resume. A paused download unpauses in place; an errored
-   * one is pushed again, and aria2 continues from the bytes the `.aria2` control
-   * file already accounts for.
+   * Two different things resume. A paused download continues in place; an
+   * errored one is pushed again, and the engine continues from the bytes it
+   * already has.
    *
    * @returns {Promise<boolean>}
    */
   async resume() {
     if (this.state.phase === 'paused') {
-      if (!this.aria2Config) return false;
-      for (const { gid } of this.gids) await aria2.unpause(this.aria2Config, gid).catch(() => {});
+      if (!this.transfer || !this.run) return false;
+      await this.transfer.resume(this.run);
       this.setState({ phase: 'downloading', files: this.files, progress: this.progress.slice() });
       return true;
     }
+    // A job waiting on the user runs again. The netdisk path answers its own
+    // login by reloading the share page, so this is the media path.
+    if (this.state.phase === 'needs-human') {
+      if (!this.transfer || !this.run) return false;
+      this.settled = false;
+      try {
+        // 用户刚在窗口里登录过，重新导一次 cookie，yt-dlp 这才带得上登录态。
+        await this.exportMediaCookies();
+        await this.transfer.retry(this.run);
+        this.setState({ phase: 'downloading', files: this.files, progress: this.progress });
+        this.startPolling();
+        return true;
+      } catch (error) {
+        this.settled = true;
+        this.setState({ phase: 'failed', code: 'delivery', message: error.message, files: this.files });
+        return false;
+      }
+    }
     if (this.state.phase !== 'failed') return false;
-    const files = this.state.files ?? [];
-    const config = this.aria2Config ?? this.config?.() ?? null;
-    if (!files.length || !config) return false;
+    if (!this.transfer || !this.run) return false;
 
     this.settled = false;
     this.readded = false;
-    this.aria2Config = config;
-    this.files = files;
     try {
-      await this.resubmit(config);
+      await this.resubmit();
       this.setState({ phase: 'downloading', files: this.files, progress: this.progress });
       this.startPolling();
       return true;
     } catch (error) {
       this.settled = true;
-      this.setState({ phase: 'failed', code: 'delivery', message: error.message, files });
+      this.setState({ phase: 'failed', code: 'delivery', message: error.message, files: this.files });
       return false;
     }
   }
@@ -1775,9 +1934,7 @@ class Job {
   async cancel() {
     if (this.settled) return;
     this.stopPolling();
-    if (this.aria2Config) {
-      for (const { gid } of this.gids) await aria2.remove(this.aria2Config, gid).catch(() => {});
-    }
+    if (this.transfer && this.run) await this.transfer.cancel(this.run).catch(() => {});
     this.fail('cancelled', '任务已取消。');
   }
 
@@ -1789,6 +1946,15 @@ class Job {
    * @returns {Promise<{ ok: boolean, message: string }>}
    */
   async loginNow() {
+    // A media job has no netdisk to sign into. The app's own window takes the
+    // site, and the session keeps the cookie the next attempt needs.
+    if (this.link.kind !== 'netdisk') {
+      await this.openMediaWindow();
+      return {
+        ok: true,
+        message: '在这个窗口里登录或过验证，登录态会留在应用的会话里，然后点「重试」。',
+      };
+    }
     const provider = getProvider(this.link.provider);
     if (!provider) return { ok: false, message: `不认识这个网盘：${this.link.provider}` };
     if (provider.loginKind !== 'cookie') {
@@ -1818,6 +1984,7 @@ class JobManager {
    *   userscript: import('./userscript').UserscriptSource,
    *   vendor: Record<string, string>,
    *   resources: Record<string, string>,
+   *   resourcesDir?: string,
    *   partition: string,
    *   preloadPath: string,
    *   emit: (job: import('../shared/protocol').Job) => void,
@@ -1826,11 +1993,24 @@ class JobManager {
    *   health: import('./provider-health').ProviderHealthStore,
    * }} options
    */
-  constructor({ store, userscript, vendor, resources, partition, preloadPath, emit, daemon, tasks, health }) {
+  constructor({
+    store,
+    userscript,
+    vendor,
+    resources,
+    resourcesDir,
+    partition,
+    preloadPath,
+    emit,
+    daemon,
+    tasks,
+    health,
+  }) {
     this.store = store;
     this.userscript = userscript;
     this.vendor = vendor;
     this.resources = resources;
+    this.resourcesDir = resourcesDir;
     this.partition = partition;
     this.preloadPath = preloadPath;
     this.emit = emit;
@@ -1961,44 +2141,57 @@ class JobManager {
    */
   submit(raw, { script } = {}) {
     const text = String(raw ?? '');
-    const links = parseShareLinks(text);
-    if (!links.length) {
+    const sources = parseSources(text);
+    if (!sources.length) {
       const names = Object.values(PROVIDERS).map((provider) => provider.label).join('、');
       return {
         ok: false,
-        jobs: [{ raw: text.trim().slice(0, 200), error: `看不懂这个链接。目前支持：${names}。` }],
+        jobs: [
+          {
+            raw: text.trim().slice(0, 200),
+            error: `看不懂这个链接。目前支持：${names}，以及视频网站页面和普通文件直链。`,
+          },
+        ],
       };
     }
 
     const results = [];
-    for (const link of links) {
-      const existing = this.findActive(link);
+    for (const source of sources) {
+      const existing = this.findActive(source);
       if (existing) {
-        results.push({ raw: link.raw, duplicateOf: existing.id });
+        results.push({ raw: source.raw, duplicateOf: existing.id });
         continue;
       }
-      const job = this.buildJob({ link, script });
+      const job = this.buildJob({ link: source, script });
       this.jobs.set(job.id, job);
       this.emit(job.snapshot());
 
-      const contentsId = job.prepare(this.partition, this.preloadPath, script);
-      if (contentsId >= 0) this.byContents.set(contentsId, job);
-      job.load();
-      results.push({ raw: link.raw, jobId: job.id });
+      if (source.kind === 'netdisk') {
+        const contentsId = job.prepare(this.partition, this.preloadPath, script);
+        if (contentsId >= 0) this.byContents.set(contentsId, job);
+        job.load();
+      } else if (source.kind === 'media') {
+        // A media page needs no browser dance: yt-dlp reads it by itself.
+        job.startMedia();
+      } else {
+        job.startDirect();
+      }
+      results.push({ raw: source.raw, jobId: job.id });
     }
     return { ok: results.some((entry) => entry.jobId), jobs: results };
   }
 
   /**
-   * The job already working on this exact share, if any. A finished job does not
-   * count: the link may be worth downloading again, and its files are already on
-   * disk under their own names.
+   * The job already working on this exact source, if any. A finished job does
+   * not count: the link may be worth downloading again, and its files are already
+   * on disk under their own names.
    *
-   * @param {import('../shared/protocol').ShareLink} link
+   * @param {import('../shared/protocol').Source} source
    */
-  findActive(link) {
+  findActive(source) {
+    const key = sourceKey(source);
     for (const job of this.jobs.values()) {
-      if (job.link?.provider !== link.provider || job.link?.shareId !== link.shareId) continue;
+      if (sourceKey(job.link) !== key) continue;
       if (ACTIVE_PHASES.has(job.state.phase)) return job;
     }
     return null;
@@ -2039,25 +2232,109 @@ class JobManager {
     return this.health.view(Object.keys(PROVIDERS));
   }
 
+  /** The source registry, for the renderer to draw its lists from. */
+  sources() {
+    return sourceViews();
+  }
+
+  /** Where yt-dlp is and what version it is. */
+  async ytdlpStatus() {
+    const settings = this.store.getSettings();
+    const binary = this.ytdlpBinary(settings);
+    if (!binary) {
+      return { running: false, path: '', version: null, error: '未找到 yt-dlp 可执行文件' };
+    }
+    try {
+      const version = await readVersion(binary);
+      return { running: true, path: binary, version, error: null };
+    } catch (error) {
+      return { running: false, path: binary, version: null, error: error.message };
+    }
+  }
+
   /**
-   * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').ShareLink,
+   * Update the bundled yt-dlp.
+   *
+   * Never yt-dlp's own self-updater: the upstream release notes warn that older
+   * executables are vulnerable to a man-in-the-middle attack and tell you to
+   * install a new release by hand. The app does that instead, and verifies the
+   * download against the release's own SHA2-256SUMS.
+   */
+  async updateYtDlp() {
+    const settings = this.store.getSettings();
+    const binary = this.ytdlpBinary(settings);
+    if (!binary) return { ok: false, message: '没有可更新的 yt-dlp 路径' };
+    try {
+      const result = await updateBinary({
+        binaryPath: binary,
+        channel: settings.ytdlpChannel || 'stable',
+      });
+      return { ok: true, message: `yt-dlp 已更新到 ${result.version}`, version: result.version };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  }
+
+  /** Where ffmpeg is, and whether it is there at all. */
+  async ffmpegStatus() {
+    const settings = this.store.getSettings();
+    return ffmpegStatus({ configuredPath: settings.media?.ffmpegPath });
+  }
+
+  /**
+   * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').Source,
    *   script?: { source: string, version: string, origin: string } }} options
    * @returns {Job}
    */
   buildJob({ id, createdAt, link, script }) {
+    const settings = this.store.getSettings();
+    // The source says which engine it wants by default; the user can override
+    // that per source in the settings.
+    const source = getSource(link.kind === 'netdisk' ? link.provider : link.kind);
+    const engineId = source ? resolveEngineId(source, settings) : 'aria2';
+    const transfer = createTransfer({
+      engineId,
+      aria2Config: () => this.aria2Config(),
+      ytdlp: { binary: this.ytdlpBinary(settings) },
+      options: this.mediaOptions(settings),
+    });
+
     return new Job({
       id,
       createdAt,
       link,
       script: script ?? this.userscript.get(),
-      deliver: (files) => this.deliver(files),
+      transfer,
+      deliver: (files, engine) => this.deliver(files, engine),
       emit: (updated) => this.emit(updated.snapshot()),
       onDone: (contentsId) => this.byContents.delete(contentsId),
       persist: (updated) => this.persist(updated),
       allowTransfer: () => Boolean(this.store.getSettings().allowTransfer),
       config: () => this.aria2Config(),
+      settings: () => this.store.getSettings(),
+      downloadDir: () => this.downloadDir(),
+      partition: this.partition,
       session: session.fromPartition(this.partition),
     });
+  }
+
+  /** Where every download lands, the same place aria2 puts its files. */
+  downloadDir() {
+    const settings = this.store.getSettings();
+    return settings.aria2.dir?.trim() || this.daemon.defaultDir();
+  }
+
+  /** The yt-dlp executable to use: the user's own, the bundled one, or PATH. */
+  ytdlpBinary(settings = this.store.getSettings()) {
+    return resolveBinary({
+      resourcesDir: this.resourcesDir,
+      customPath: settings.ytdlpPath,
+    }).path;
+  }
+
+  /** The media knobs, in the shape the yt-dlp engine wants them. */
+  mediaOptions(settings = this.store.getSettings()) {
+    return mediaOptions(settings);
   }
 
   /** @param {Job} job */
@@ -2075,7 +2352,10 @@ class JobManager {
       createdAt: job.createdAt,
       link: job.link,
       files,
-      gids: job.gids,
+      // The engine's own handles. An old record has `gids` instead; the store
+      // reads both.
+      runs: job.run ? job.run.runs.map((item) => ({ file: item.file, runId: item.runId })) : [],
+      engine: job.run?.engine || 'aria2',
       ...(job.scriptVersion ? { scriptVersion: job.scriptVersion } : {}),
       state:
         job.state.phase === 'downloading' || job.state.phase === 'paused'
@@ -2109,20 +2389,48 @@ class JobManager {
   restore() {
     let restored = 0;
     for (const record of this.tasks.all()) {
-      if (this.jobs.has(record.id) || !record.files?.length || !record.link) continue;
-      const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link: record.link });
-      job.files = record.files;
-      job.gids = Array.isArray(record.gids) ? record.gids : [];
-      this.jobs.set(job.id, job);
-      restored += 1;
-
+      if (this.jobs.has(record.id) || !record.link) continue;
+      const link = normalizeSource(record.link);
+      if (!link) continue;
       const saved = record.state && typeof record.state === 'object' ? record.state : {};
+      const files = Array.isArray(record.files) ? record.files : [];
+
+      // A settled job comes back exactly as it was.
       if (saved.phase === 'done' || saved.phase === 'failed') {
+        const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+        job.files = files;
         job.settled = saved.phase === 'failed';
         job.state = saved;
+        this.jobs.set(job.id, job);
+        restored += 1;
         this.emit(job.snapshot());
         continue;
       }
+
+      // yt-dlp cannot be reattached to a process that died with the app, but it
+      // resumes from its own .part file, so run it again.
+      if (link.kind === 'media') {
+        const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+        job.files = files;
+        this.jobs.set(job.id, job);
+        restored += 1;
+        job.startMedia();
+        continue;
+      }
+
+      if (!files.length) continue;
+      const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+      job.files = files;
+      // Old records kept aria2 GIDs under `gids`; new ones keep the engine's
+      // own handles under `runs`.
+      const runs = Array.isArray(record.runs)
+        ? record.runs
+        : Array.isArray(record.gids)
+          ? record.gids.map((entry) => ({ file: entry.file, runId: entry.gid }))
+          : [];
+      job.run = { engine: record.engine || 'aria2', runs, config: this.aria2Config() };
+      this.jobs.set(job.id, job);
+      restored += 1;
 
       if (!this.aria2Status().running) {
         job.settled = true;
@@ -2137,8 +2445,10 @@ class JobManager {
       }
 
       job.aria2Config = this.aria2Config();
-      job.progress = job.gids.map(({ file, gid }) => ({
-        gid,
+      job.progress = job.run.runs.map(({ file, runId }) => ({
+        engine: job.run.engine,
+        runId,
+        ...(job.run.engine === 'aria2' ? { gid: runId } : {}),
         name: file.name,
         status: 'waiting',
         totalLength: 0,
@@ -2238,19 +2548,17 @@ class JobManager {
   }
 
   /**
+   * 出口。剪贴板与浏览器把链接交出去就完事，下载由引擎接手。
+   *
    * @param {import('../shared/protocol').ExtractedFile[]} files
+   * @param {{ id: string } | null} [transfer]
    * @returns {Promise<
    *   | { delivery: 'clipboard', files: import('../shared/protocol').ExtractedFile[] }
    *   | { delivery: 'browser', files: import('../shared/protocol').ExtractedFile[] }
-   *   | {
-   *       delivery: 'aria2',
-   *       files: import('../shared/protocol').ExtractedFile[],
-   *       gids: Array<{ file: import('../shared/protocol').ExtractedFile, gid: string }>,
-   *       config: import('../shared/protocol').Aria2Config,
-   *     }
+   *   | { delivery: 'engine', files: import('../shared/protocol').ExtractedFile[] }
    * >}
    */
-  async deliver(files) {
+  async deliver(files, transfer) {
     const validatedFiles = files.map((file) => aria2.validateExtractedFile(file));
     const settings = this.store.getSettings();
 
@@ -2264,23 +2572,22 @@ class JobManager {
       return { delivery: 'browser', files: validatedFiles };
     }
 
-    const status = this.aria2Status();
-    if (!status.running) {
-      const error = new Error(
-        status.mode === 'builtin'
-          ? `内置 aria2 没有启动成功${status.error ? `：${status.error}` : ''}。设置里点「重启内置下载器」试试。`
-          : '外部 aria2 连不上。设置里点「测试连接」看看地址和令牌。',
-      );
-      error.code = 'aria2-down';
-      throw error;
+    // Only aria2 has a daemon that can be down. yt-dlp is a process, so it is
+    // either running or it failed, and the job reports that itself.
+    if (transfer?.id === 'aria2') {
+      const status = this.aria2Status();
+      if (!status.running) {
+        const error = new Error(
+          status.mode === 'builtin'
+            ? `内置 aria2 没有启动成功${status.error ? `：${status.error}` : ''}。设置里点「重启内置下载器」试试。`
+            : '外部 aria2 连不上。设置里点「测试连接」看看地址和令牌。',
+        );
+        error.code = 'aria2-down';
+        throw error;
+      }
     }
 
-    const config = this.aria2Config();
-    const gids = [];
-    for (const file of validatedFiles) {
-      gids.push({ file, gid: await aria2.addUri(config, file) });
-    }
-    return { delivery: 'aria2', files: validatedFiles, gids, config };
+    return { delivery: 'engine', files: validatedFiles };
   }
 
   /**

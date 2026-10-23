@@ -31,6 +31,25 @@ const DEFAULT_SETTINGS = {
   autoSubmit: false,
   // How many jobs the main list keeps; older ones move to jobs-archive.jsonl.
   archiveLimit: 500,
+  // The media knobs. Empty means yt-dlp picks its own default.
+  media: {
+    format: '',
+    audioFormat: '',
+    audioQuality: '',
+    mergeFormat: '',
+    embedThumbnail: false,
+    embedMetadata: false,
+    writeSubs: false,
+    subLangs: '',
+    playlist: false,
+    ffmpegPath: '',
+  },
+  // The user's own yt-dlp. Empty means the bundled one.
+  ytdlpPath: '',
+  // Which release channel the app pulls yt-dlp from.
+  ytdlpChannel: 'stable',
+  // Which engine each source uses. Absent means the source's own default.
+  engineOverrides: {},
 };
 
 /** Bounds for `archiveLimit`, so a hand-edited settings file cannot freeze the list. */
@@ -91,6 +110,28 @@ function clampArchiveLimit(value) {
 }
 
 /**
+ * Apply the caller's engine overrides on top of the stored ones.
+ *
+ * A `null` value means "this source goes back to its own default", so the key
+ * is dropped instead of kept. Without that, an override the user removed in
+ * the settings page would survive every save, because a partial patch never
+ * mentions it.
+ *
+ * @param {Record<string, any>} current
+ * @param {Record<string, any> | undefined} patch
+ * @returns {Record<string, any>}
+ */
+function mergeEngineOverrides(current, patch) {
+  if (!patch) return { ...current };
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null || value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
+
+/**
  * @param {string} file
  * @param {unknown} fallback
  */
@@ -135,6 +176,8 @@ class Store {
 
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.settingsFile, {}) };
     this.settings.aria2 = { ...DEFAULT_SETTINGS.aria2, ...this.settings.aria2 };
+    this.settings.media = { ...DEFAULT_SETTINGS.media, ...(this.settings.media || {}) };
+    this.settings.engineOverrides = { ...(this.settings.engineOverrides || {}) };
     this.settings.archiveLimit = clampArchiveLimit(this.settings.archiveLimit);
 
     /** @type {Record<string, unknown>} */
@@ -155,6 +198,10 @@ class Store {
       ...this.settings,
       ...patch,
       aria2: { ...this.settings.aria2, ...(patch.aria2 ?? {}) },
+      media: { ...this.settings.media, ...(patch.media ?? {}) },
+      // A partial patch keeps the other fields, but an override the user took
+      // back to its default is sent as null and gets dropped.
+      engineOverrides: mergeEngineOverrides(this.settings.engineOverrides, patch.engineOverrides),
       archiveLimit: clampArchiveLimit(patch.archiveLimit ?? this.settings.archiveLimit),
     };
     writeJson(this.settingsFile, this.settings);

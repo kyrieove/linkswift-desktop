@@ -222,6 +222,9 @@ const PROVIDERS = {
     pageAnchor: '.share-btns',
     passcodeParam: null,
     loginKind: 'cookie',
+    capability: { grade: '一键取链', note: '已验证' },
+    color: '#8b5cf6',
+    desc: '分享文案与提取码识别 · 浏览器登录',
     driveUrl: 'https://pan.quark.cn/list',
     authenticatedHosts: [
       'pan.quark.cn',
@@ -244,6 +247,9 @@ const PROVIDERS = {
     // code screen without the driver having to click its submit button.
     passcodeParam: 'pwd',
     loginKind: 'cookie',
+    capability: { grade: '一键取链 · 大文件需转存', note: '已验证' },
+    color: '#3b82f6',
+    desc: '支持登录处理 · 超过 50MB 转存需要开启授权',
     driveUrl: 'https://pan.baidu.com/disk/main#/index?category=all',
     authenticatedHosts: [
       'pan.baidu.com',
@@ -264,6 +270,9 @@ const PROVIDERS = {
     pageAnchor: '.file-info-share-buttom',
     passcodeParam: 'pwd',
     loginKind: 'cookie',
+    capability: { grade: '一键取链', note: '已验证' },
+    color: '#f97316',
+    desc: '分享页直接取链 · 下载携带会话登录态 · 403 时可登录后重新取链',
     driveUrl: 'https://drive.uc.cn/list',
     // Selectors are transcribed from the script's own mount table; no live share
     // page has been driven yet, so a miss falls back to the manual window.
@@ -286,6 +295,10 @@ const PROVIDERS = {
     // 迅雷 keeps its credentials in localStorage, not in a cookie, so the Chrome
     // cookie import cannot carry a login over; the app's own window has to own it.
     loginKind: 'window',
+    capability: { grade: '仅转存 · 需手动推送', note: '实验性' },
+    color: '#06b6d4',
+    desc: '应用窗口登录 → 授权转存 → 我的云盘选文件 → Aria2 取链',
+    badges: ['需转存 / 手动取链'],
     loginUrl: 'https://pan.xunlei.com/',
     driveUrl: 'https://pan.xunlei.com/',
     // Its share page cannot produce a direct link, so every job is a transfer.
@@ -420,4 +433,4 @@ function getProvider(id) {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, id) ? PROVIDERS[id] : null;
 }
 
-module.exports = { PROVIDERS, parseShareLink, parseShareLinks, getProvider };
+module.exports = { PROVIDERS, parseShareLink, parseShareLinks, getProvider, extractShareUrl, extractShareUrls };

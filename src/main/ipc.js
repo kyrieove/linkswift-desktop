@@ -51,11 +51,19 @@ function registerIpc(bus, manager, options = {}) {
     });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
+  checkedHandle(INVOKE.chooseFile, async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile'] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   checkedHandle(INVOKE.revealWindow, (_event, jobId) => manager.reveal(String(jobId)));
   checkedHandle(INVOKE.archiveJobs, (_event, ids) => manager.archiveJobs(ids));
   checkedHandle(INVOKE.unarchiveJobs, (_event, ids) => manager.unarchiveJobs(ids));
   checkedHandle(INVOKE.purgeJobs, (_event, ids) => manager.purgeJobs(ids));
   checkedHandle(INVOKE.providerHealth, () => manager.providerHealth());
+  checkedHandle(INVOKE.sources, () => manager.sources());
+  checkedHandle(INVOKE.ytdlpStatus, () => manager.ytdlpStatus());
+  checkedHandle(INVOKE.ytdlpUpdate, () => manager.updateYtDlp());
+  checkedHandle(INVOKE.ffmpegStatus, () => manager.ffmpegStatus());
   checkedHandle(INVOKE.login, (_event, jobId) => manager.login(String(jobId)));
   checkedHandle(INVOKE.continueAfterLogin, (_event, jobId) => manager.continueAfterLogin(String(jobId)));
   checkedHandle(INVOKE.aria2Status, () => manager.aria2Status());

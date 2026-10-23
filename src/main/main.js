@@ -99,6 +99,11 @@ function aria2BinaryPath() {
     : path.join(__dirname, '..', '..', 'resources', 'aria2', 'aria2c.exe');
 }
 
+/** The resources root, where the bundled yt-dlp lives. */
+function resourcesDir() {
+  return app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..', 'resources');
+}
+
 async function main() {
   // The UI carries its own navigation, so the native File/Edit/View/Window menu
   // bar would only take a row of the window and offer nothing the app lacks.
@@ -138,6 +143,7 @@ async function main() {
     userscript,
     vendor,
     resources,
+    resourcesDir: resourcesDir(),
     partition: PARTITION,
     preloadPath: NETDISK_PRELOAD,
     emit: pushJob,

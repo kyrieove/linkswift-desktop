@@ -59,3 +59,35 @@ Because aria2 is GPL-2.0-or-later and this project is AGPL-3.0-or-later, this
 project's own code is covered by the AGPL and the bundled aria2 binary by the
 GPL. Distributing this repository, or anything built from it, means shipping
 resources/aria2/COPYING together with the binary.
+
+---
+
+yt-dlp is bundled as resources/ytdlp/yt-dlp.exe and run by the app as a child
+process. It is a separate program, unmodified, driven over its documented
+command line interface; none of its code is linked into this project.
+
+  yt-dlp
+    Authors: the yt-dlp contributors, and the youtube-dl project it forked from
+    Source: https://github.com/yt-dlp/yt-dlp (release 2026.10.21)
+    License of the source: The Unlicense (public domain).
+    License of the bundled executable: GNU General Public License version 3 or
+    later, because the PyInstaller build contains GPLv3+ licensed code. The
+    upstream statement is in the project's README under "Licensing". The full
+    third-party license text ships next to the binary as
+    resources/ytdlp/THIRD_PARTY_LICENSES.txt, and the release checksums as
+    resources/ytdlp/SHA2-256SUMS.
+
+    sha256 of resources/ytdlp/yt-dlp.exe:
+    33121d192d706e62f684a06f80918e3f3a8ba52ac3a65213b6951c39c7d9f555
+
+Because the bundled yt-dlp executable is GPLv3+ and this project is
+AGPL-3.0-or-later, the two are compatible and this project stays under the
+AGPL. Distributing this repository, or anything built from it, means shipping
+resources/ytdlp/THIRD_PARTY_LICENSES.txt together with the binary.
+
+The app updates this binary itself: it fetches a release, verifies the
+executable against the release's SHA2-256SUMS, and replaces the file. It never
+runs yt-dlp's own self-updater, because the upstream release notes warn that
+older executables are vulnerable to man-in-the-middle attacks and recommend
+installing a new release by hand.
+

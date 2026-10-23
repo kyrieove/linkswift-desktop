@@ -13,7 +13,18 @@
  * @typedef {'quark' | 'baidu' | 'uc' | 'xunlei'} ProviderId
  * @typedef {'aria2' | 'clipboard' | 'browser'} DeliveryTarget
  * @typedef {'login' | 'passcode' | 'captcha' | 'unknown-page' | 'manual' | 'transfer'} HumanReason
- * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found' | 'link-invalid' | 'file-missing' | 'passcode-wrong' | 'needs-transfer' | 'rate-limited' | 'extract-failed' | 'link-expired' | 'aria2-down'} FailureCode
+ * @typedef {'upstream-redesigned' | 'unsupported-provider' | 'network' | 'delivery' | 'timeout' | 'cancelled' | 'no-files' | 'chrome-not-found' | 'link-invalid' | 'file-missing' | 'passcode-wrong' | 'needs-transfer' | 'rate-limited' | 'extract-failed' | 'link-expired' | 'aria2-down'
+ *   | 'media-unsupported' | 'media-auth' | 'media-geo' | 'media-merge' | 'media-tool-missing' | 'media-error'} FailureCode
+ *
+ * What kind of thing the user pasted. A netdisk share, a media page, or a plain
+ * file address.
+ *
+ * @typedef {'netdisk' | 'media' | 'direct'} SourceKind
+ *
+ * Which engine moves the bytes. aria2 is one implementation, not the architecture:
+ * a source declares its default engine and the user can override it.
+ *
+ * @typedef {'aria2' | 'yt-dlp'} EngineId
  */
 
 /**
@@ -36,6 +47,34 @@
  */
 
 /**
+ * What the user pasted. Three shapes, and the shape says which engine and which
+ * page flow the job takes.
+ *
+ * A netdisk share has an id and a passcode because it goes through a browser page.
+ * A media page and a plain address are a URL and nothing else: a media page goes
+ * to yt-dlp, a plain address to aria2.
+ *
+ * @typedef {object} NetdiskSource
+ * @property {'netdisk'} kind
+ * @property {string} raw
+ * @property {ProviderId} provider
+ * @property {string} shareId
+ * @property {string | null} passcode
+ *
+ * @typedef {object} MediaSource
+ * @property {'media'} kind
+ * @property {string} raw
+ * @property {string} url
+ *
+ * @typedef {object} DirectSource
+ * @property {'direct'} kind
+ * @property {string} raw
+ * @property {string} url
+ *
+ * @typedef {NetdiskSource | MediaSource | DirectSource} Source
+ */
+
+/**
  * @typedef {object} ShareLink
  * @property {string} raw
  * @property {ProviderId} provider
@@ -51,14 +90,22 @@
  */
 
 /**
+ * One file's progress. The shape is the same whichever engine produced it, so
+ * the renderer does not branch on where the bytes came from.
+ *
+ * `runId` is the engine's own handle: an aria2 GID, or the target path yt-dlp is
+ * writing. `gid` stays for the aria2 case only, and older records still carry it.
+ *
  * @typedef {object} DownloadProgress
- * @property {string} gid
+ * @property {EngineId} engine
+ * @property {string} runId
  * @property {string} name
  * @property {'waiting' | 'active' | 'complete' | 'error' | string} status
- * @property {number} totalLength      Total length in bytes
+ * @property {number} totalLength      Total length in bytes; 0 when the engine does not know it yet
  * @property {number} completedLength  Completed length in bytes
  * @property {number} downloadSpeed    Bytes per second
  * @property {number} connections      Active connections
+ * @property {string | null} [gid]      aria2 only
  * @property {string | null} [errorCode]
  * @property {string | null} [errorMessage]
  */
@@ -103,7 +150,7 @@
 /**
  * @typedef {object} Job
  * @property {string} id
- * @property {ShareLink} link
+ * @property {Source} link
  * @property {JobPhase} state
  * @property {number} createdAt
  * @property {boolean} [restored]  Rebuilt from disk after a restart
@@ -133,10 +180,15 @@ const INVOKE = {
   restartAria2: 'linkswift:aria2:restart',
   openDownloadDir: 'linkswift:downloads:open',
   chooseDirectory: 'linkswift:directory:choose',
+  chooseFile: 'linkswift:file:choose',
   archiveJobs: 'linkswift:jobs:archive',
   unarchiveJobs: 'linkswift:jobs:unarchive',
   purgeJobs: 'linkswift:jobs:purge',
   providerHealth: 'linkswift:provider:health',
+  sources: 'linkswift:sources:list',
+  ytdlpStatus: 'linkswift:ytdlp:status',
+  ytdlpUpdate: 'linkswift:ytdlp:update',
+  ffmpegStatus: 'linkswift:ffmpeg:status',
 };
 
 /**

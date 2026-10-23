@@ -151,6 +151,27 @@ async function run(state) {
       }
     };
 
+    /**
+     * Take a picture of the window as it is right now.
+     *
+     * The probe window is never shown, so Chromium keeps serving the last
+     * painted frame and a capture can show a page that is no longer on
+     * screen. A size change is what makes it paint again, so nudge the
+     * window, let it redraw, and take the picture at the nudged size.
+     *
+     * @param {Electron.BrowserWindow} target
+     * @returns {Promise<Electron.NativeImage>}
+     */
+    const shoot = async (target) => {
+      const size = target.getSize();
+      target.setSize(size[0] + 40, size[1] + 20);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const image = await target.webContents.capturePage();
+      target.setSize(size[0], size[1]);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return image;
+    };
+
     // 1. Assert Bridge Surface
     const bridgeJson = await read(`JSON.stringify({
       present: Boolean(window.linkswift),
@@ -424,6 +445,28 @@ async function run(state) {
           files: [{ name: 'archived-file.zip', url: 'https://example.com/arch.zip', headers: {} }],
         },
       },
+      {
+        // A media job. Its record carries a kind instead of a provider, which is
+        // what used to make the source filter drop it on the floor.
+        id: 'fixture-media-clip',
+        createdAt: now - 11500,
+        link: { kind: 'media', raw: 'https://www.youtube.com/watch?v=clip1', url: 'https://www.youtube.com/watch?v=clip1' },
+        state: {
+          phase: 'done',
+          files: [{ name: 'clip-title.mp4', url: 'https://example.com/clip.mp4', headers: {} }],
+        },
+      },
+      {
+        // A direct file link. Same shape as the media fixture: a kind, no provider.
+        id: 'fixture-direct-zip',
+        createdAt: now - 12000,
+        link: { kind: 'direct', raw: 'https://example.com/a/b.zip', url: 'https://example.com/a/b.zip' },
+        state: {
+          phase: 'downloading',
+          files: [{ name: 'b.zip', url: 'https://example.com/b.zip', headers: {} }],
+          progress: [{ gid: 'gid-direct', name: 'b.zip', status: 'active', totalLength: 4000, completedLength: 1000, downloadSpeed: 500, connections: 4 }],
+        },
+      },
     ];
     for (const fixture of fixtures) {
       win.webContents.send(PUSH.jobEvent, fixture);
@@ -486,7 +529,56 @@ async function run(state) {
     })()`);
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    // 12. Provider filter composes with the phase filter, search and sort
+    // 12. Source filter composes with the phase filter, search and sort
+    // The source buttons are drawn from the registry the main process sends,
+    // so they are not in the markup until that arrives.
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (await read(`!!document.querySelector('[data-source-kind="netdisk"]')`)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // The sidebar offers one button per category, not one per netdisk.
+    const sourceKinds = JSON.parse(
+      await read(`JSON.stringify(Array.from(document.querySelectorAll('#source-filters [data-source-kind]')).map((b) => b.dataset.sourceKind))`)
+    );
+    assert.deepStrictEqual(
+      sourceKinds,
+      ['netdisk', 'media', 'direct'],
+      `The sidebar must offer one button per category, got ${sourceKinds}`
+    );
+    report.assertionsPassed++;
+
+    // The category filter must reach every netdisk at once.
+    await read(`document.querySelector('[data-source-kind="netdisk"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const netdiskRows = Number(await read('document.querySelectorAll(".taskrow, #job-list .job").length'));
+    const netdiskOnly = JSON.parse(
+      await read(`JSON.stringify(Array.from(document.querySelectorAll('.taskrow')).map((r) => !!r.querySelector('.source')?.textContent.startsWith('夸克网盘') || r.querySelector('.source')?.textContent.startsWith('百度网盘') || r.querySelector('.source')?.textContent.startsWith('UC 网盘') || r.querySelector('.source')?.textContent.startsWith('迅雷云盘')))`)
+    );
+    assert(netdiskOnly.length > 0, 'The 网盘 category filter must show netdisk tasks');
+    assert(netdiskOnly.every(Boolean), 'The 网盘 category filter must not mix in other sources');
+    report.assertionsPassed += 2;
+
+    // A media job has a kind, not a provider. Filtering by category used to
+    // compare against a provider field that a media record does not have, so
+    // the media and direct filters came up empty.
+    await read(`document.querySelector('[data-source-kind="media"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const mediaRows = Number(await read('document.querySelectorAll(".taskrow, #job-list .job").length'));
+    assert.strictEqual(mediaRows, 1, `The 媒体 filter must show the media task, got ${mediaRows}`);
+    await read(`document.querySelector('[data-source-kind="direct"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const directRows = Number(await read('document.querySelectorAll(".taskrow, #job-list .job").length'));
+    assert.strictEqual(directRows, 1, `The 直链 filter must show the direct-link task, got ${directRows}`);
+    report.assertionsPassed += 2;
+
+    // One provider, reached from its card on the sources page.
+    await read(`document.querySelector('[data-page="sources"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (await read(`!!document.querySelector('[data-source="xunlei"]')`)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     await read(`document.querySelector('[data-source="xunlei"]')?.click()`);
     await new Promise((resolve) => setTimeout(resolve, 300));
     const xunleiCount = await read('document.querySelectorAll(".taskrow, #job-list .job").length');
@@ -497,7 +589,7 @@ async function run(state) {
     assert(xunleiOnly.every(Boolean), 'Provider filter must only render tasks of that provider');
     report.assertionsPassed += 2;
 
-    // The phase filter must replace, not stack on, the provider filter
+    // The phase filter must replace, not stack on, the source filter
     await read(`document.querySelectorAll('#filters .sideitem')[3]?.click()`);
     await new Promise((resolve) => setTimeout(resolve, 300));
     const humanStates = JSON.parse(
@@ -506,9 +598,9 @@ async function run(state) {
     assert(humanStates.length >= 3, `Phase filter should list every needs-human task, got ${humanStates.length}`);
     assert(humanStates.every((state) => state === 'needs-human'), 'Phase filter must not mix phases');
     assert.strictEqual(
-      Number(await read(`document.querySelectorAll('[data-source].active').length`)),
+      Number(await read(`document.querySelectorAll('[data-source].active, [data-source-kind].active').length`)),
       0,
-      'Phase filter must clear the provider filter'
+      'Phase filter must clear the source filter'
     );
     report.assertionsPassed += 3;
 
@@ -581,7 +673,7 @@ async function run(state) {
 
     // Every sidebar filter must be reachable (scrolled, not clipped) at the minimum height
     const shortSidebarUnreachable = JSON.parse(
-      await read(`JSON.stringify(Array.from(document.querySelectorAll('#filters .sideitem, .sidebar [data-source]')).map((b) => {
+      await read(`JSON.stringify(Array.from(document.querySelectorAll('#filters .sideitem, .sidebar [data-source-kind]')).map((b) => {
         b.scrollIntoView({ block: 'nearest' });
         const r = b.getBoundingClientRect();
         return r.top < 0 || r.bottom > document.documentElement.clientHeight + 1;
@@ -628,8 +720,7 @@ async function run(state) {
     await read(`document.querySelector('[data-job-id="fixture-long-multifile"]')?.click()`);
     await new Promise((resolve) => setTimeout(resolve, 400));
     const imgPath900Detail = path.join(os.tmpdir(), 'linkswift-probe-900x760-light-detail.png');
-    const imgBuf900Detail = await win.webContents.capturePage();
-    fs.writeFileSync(imgPath900Detail, imgBuf900Detail.toPNG());
+    fs.writeFileSync(imgPath900Detail, (await shoot(win)).toPNG());
     report.screenshots.push(imgPath900Detail);
 
     // 14. Test 720x520 dark with drawer open, compact layout, overlay, no page overflow
@@ -742,6 +833,52 @@ async function run(state) {
     report.purgeUnpersisted = await assertPurgeUnpersistedFailure(read, win, tasks);
     report.emptyStates = await assertEmptyStates(read, win);
     report.providerHealth = await assertProviderHealth(read, win);
+
+    // The sources page is where the per-netdisk facts live now, so it gets a
+    // picture too. A layout that breaks there is a layout that breaks.
+    await read(`document.querySelector('[data-page="sources"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const sourcesTitle = await read(`document.getElementById('page-title')?.textContent.trim() || ''`);
+    assert.strictEqual(sourcesTitle, '下载来源', `The sources page must be the one on screen, got "${sourcesTitle}"`);
+    // The probe window is never shown, so the compositor can hand back the last
+    // painted frame. A size change is what makes it paint again.
+    const probeSize = win.getSize();
+    win.setSize(probeSize[0] + 40, probeSize[1] + 20);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const imgPathSources = path.join(os.tmpdir(), 'linkswift-probe-sources.png');
+    fs.writeFileSync(imgPathSources, (await win.webContents.capturePage()).toPNG());
+    win.setSize(probeSize[0], probeSize[1]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    report.screenshots.push(imgPathSources);
+    await read(`document.querySelector('[data-page="tasks"]')?.click()`);
+
+    // The engine list is one row per category, and only a category with a
+    // real choice gets a dropdown. Anything else would let the user pick a
+    // combination the engines cannot run.
+    await read(`document.querySelector('[data-page="settings"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await read(`document.querySelector('[data-settingtab="media"]')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const engineRows = JSON.parse(
+      await read(`JSON.stringify(Array.from(document.querySelectorAll('#engine-overrides .enginerow')).map((row) => ({
+        label: row.querySelector('.enginelabel')?.textContent.trim() || '',
+        value: row.querySelector('.enginevalue')?.textContent.trim() || '',
+        select: row.querySelector('select')?.id || '',
+      })))`)
+    );
+    assert.deepStrictEqual(
+      engineRows.map((row) => row.label),
+      ['网盘', '媒体', '直链'],
+      `The engine list must have one row per category, got ${engineRows.map((row) => row.label)}`
+    );
+    assert.strictEqual(engineRows[0].value, 'aria2', 'The 网盘 row must state its engine');
+    assert.strictEqual(engineRows[1].value, 'yt-dlp', 'The 媒体 row must state its engine');
+    assert.strictEqual(engineRows[2].select, 'engine-direct', 'Only 直链 has a real choice, so only it gets a dropdown');
+    const imgPathMedia = path.join(os.tmpdir(), 'linkswift-probe-media-settings.png');
+    fs.writeFileSync(imgPathMedia, (await shoot(win)).toPNG());
+    report.screenshots.push(imgPathMedia);
+    await read(`document.querySelector('[data-page="tasks"]')?.click()`);
+
     report.assertionsPassed +=
       report.fiveStates.passed +
       report.stalled.passed +
@@ -1175,38 +1312,57 @@ async function assertEmptyStates(read) {
   return { passed: 6, filteredEmpty, archiveRows: archiveRows.length, taskRows: taskRows.length };
 }
 
-/** The settings page says what each netdisk can do and what happened here last. */
+/** The sources page says what each netdisk can do and what happened here last. */
 async function assertProviderHealth(read) {
-  await read(`document.querySelector('[data-page="settings"]')?.click()`);
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  await read(`document.querySelector('[data-settingtab="providers"]')?.click()`);
+  await read(`document.querySelector('[data-page="sources"]')?.click()`);
   await new Promise((resolve) => setTimeout(resolve, 400));
 
   const health = JSON.parse(
     await read(`JSON.stringify({
-      rows: Array.from(document.querySelectorAll("#provider-health-body tr")).map((row) => ({
-        provider: row.dataset.provider,
-        cells: Array.from(row.querySelectorAll("td")).map((c) => c.textContent.trim()),
+      cards: Array.from(document.querySelectorAll("#source-list [data-source-card]")).map((card) => ({
+        provider: card.dataset.sourceCard,
+        grade: card.querySelector('.sourcegrade')?.textContent.trim() || '',
+        health: card.querySelector('.sourcehealth')?.textContent.trim() || '',
       })),
-      archiveCount: document.getElementById("archive-count")?.textContent || "",
-      clearArchive: Boolean(document.getElementById("clear-archive")),
+      groups: Array.from(document.querySelectorAll('#source-list .sourcegrouphead')).map((h) => h.textContent.trim()),
     })`)
   );
+  const netdisks = health.cards.filter((card) => ['quark', 'baidu', 'uc', 'xunlei'].includes(card.provider));
   assert.deepStrictEqual(
-    health.rows.map((row) => row.provider),
+    netdisks.map((card) => card.provider),
     ['quark', 'baidu', 'uc', 'xunlei'],
-    `The capability table must list all four netdisks, got ${health.rows.map((row) => row.provider)}`
+    `The sources page must list all four netdisks, got ${netdisks.map((card) => card.provider)}`
   );
-  for (const row of health.rows) {
-    assert.strictEqual(row.cells.length, 3, `${row.provider} must have capability and last-result cells`);
-    assert(row.cells[1], `${row.provider} must name its capability`);
-    assert.strictEqual(row.cells[2], '未验证', `${row.provider} has no real run yet, must read 未验证, reads "${row.cells[2]}"`);
+  for (const card of netdisks) {
+    assert(card.grade, `${card.provider} must name its capability`);
+    assert.strictEqual(card.health, '本机还没跑过', `${card.provider} has no real run yet, must say so, reads "${card.health}"`);
   }
-  assert.strictEqual(health.archiveCount, '1', `The archive count must match the archived job, reads "${health.archiveCount}"`);
-  assert(health.clearArchive, 'The settings page must offer 清空归档列表');
+  assert.deepStrictEqual(
+    health.groups,
+    ['网盘', '媒体', '直链'],
+    `The sources page must group by category, got ${health.groups}`
+  );
+
+  // The archive management has its own settings tab now. The per-netdisk
+  // facts live on the sources page, so the table must not be here twice.
+  await read(`document.querySelector('[data-page="settings"]')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await read(`document.querySelector('[data-settingtab="archive"]')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const archive = JSON.parse(
+    await read(`JSON.stringify({
+      archiveCount: document.getElementById("archive-count")?.textContent || "",
+      clearArchive: Boolean(document.getElementById("clear-archive")),
+      healthTable: Boolean(document.getElementById("provider-health-body")),
+    })`)
+  );
+  assert.strictEqual(archive.archiveCount, '1', `The archive count must match the archived job, reads "${archive.archiveCount}"`);
+  assert(archive.clearArchive, 'The settings page must offer 清空归档');
+  assert.strictEqual(archive.healthTable, false, 'The per-netdisk capability table must not be duplicated in the settings page');
 
   await read(`document.querySelector('[data-page="tasks"]')?.click()`);
-  return { passed: 4, rows: health.rows.length, archiveCount: health.archiveCount };
+  // 1 ordering + 4 netdisks x 2 + 1 grouping + 3 archive assertions.
+  return { passed: 13, rows: netdisks.length, archiveCount: archive.archiveCount };
 }
 
 run(state)

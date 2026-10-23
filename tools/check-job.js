@@ -11,24 +11,71 @@ const { Job, JobManager } = require('../src/main/job');
  * missing, and each one is checked on the states the renderer reads.
  */
 
+/**
+ * A progress row in the shape the engine hands back.
+ * @param {string} runId
+ * @param {string} name
+ * @param {string} status
+ */
+function row(runId, name, status) {
+  return {
+    engine: 'aria2',
+    runId,
+    gid: runId,
+    name,
+    status,
+    totalLength: 100,
+    completedLength: 10,
+    downloadSpeed: 0,
+    connections: 1,
+    errorCode: null,
+    errorMessage: null,
+  };
+}
+
 function makeJob(overrides = {}) {
   const emitted = [];
   const deliveries = [];
+  const config = { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' };
+  // The engine is a stub here: the real one talks to the aria2 daemon, and this
+  // check is about the state machine around it.
+  let rows = [];
+  let started = [];
+  const transfer = {
+    id: 'aria2',
+    finished: false,
+    error: null,
+    async start(target) {
+      const files = target.files || [];
+      started = files.map((file) => ({ file, runId: 'gid-' + file.name }));
+      return { engine: 'aria2', runs: started, config };
+    },
+    async progress() {
+      if (rows.length) return { rows, lost: false };
+      return {
+        rows: started.map((item) => row(item.runId, item.file.name, 'waiting')),
+        lost: false,
+      };
+    },
+    async pause() {},
+    async resume() {},
+    async retry(run) {
+      return run;
+    },
+    async cancel() {},
+  };
   const job = new Job({
     link: {
+      kind: 'netdisk',
       raw: 'https://pan.baidu.com/s/1abcdef',
       provider: 'baidu',
       shareId: '1abcdef',
       passcode: null,
     },
+    transfer,
     deliver: async (files) => {
       deliveries.push(files);
-      return {
-        delivery: 'aria2',
-        files,
-        gids: files.map((file) => ({ file, gid: 'gid-' + file.name })),
-        config: { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' },
-      };
+      return { delivery: 'engine', files };
     },
     emit: (updated) => emitted.push(updated.state.phase),
     onDone: () => {},
@@ -37,7 +84,15 @@ function makeJob(overrides = {}) {
     config: () => ({ domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' }),
     ...overrides,
   });
-  return { job, emitted, deliveries };
+  return {
+    job,
+    emitted,
+    deliveries,
+    transfer,
+    setRows: (next) => {
+      rows = next;
+    },
+  };
 }
 
 /** The envelope the userscript's GM_xmlhttpRequest posts for one file. */
@@ -82,7 +137,7 @@ async function main() {
     assert.notStrictEqual(emitted[0], 'delivering', '先有「已拿到链接」，再去推下载器');
     assert.strictEqual(job.state.phase, 'downloading');
     assert.strictEqual(job.state.progress.length, 3, '进度应三条');
-    assert.strictEqual(job.gids.length, 3);
+    assert.strictEqual(job.run.runs.length, 3);
     job.stopPolling();
   }
 
@@ -168,48 +223,30 @@ async function main() {
 
   // 8. 文件夹里一个文件挂了，其余继续；全部停下来才算这个任务失败
   {
-    const aria2 = require('../src/main/aria2');
-    const realFindGid = aria2.findGid;
-    const statuses = { 'gid-a': 'active', 'gid-b': 'error' };
-    aria2.findGid = async (_config, gid) => ({
-      gid,
-      status: statuses[gid],
-      totalLength: '100',
-      completedLength: statuses[gid] === 'complete' ? '100' : '10',
-      downloadSpeed: '0',
-      connections: '1',
-      errorCode: statuses[gid] === 'error' ? '22' : undefined,
-      errorMessage:
-        statuses[gid] === 'error' ? 'The response status is not successful. status=403' : undefined,
-    });
-
-    const { job } = makeJob();
+    const { job, setRows } = makeJob();
     job.files = [
       { name: 'a.bin', url: 'https://example.com/a', headers: {} },
       { name: 'b.bin', url: 'https://example.com/b', headers: {} },
     ];
-    job.gids = [
-      { file: job.files[0], gid: 'gid-a' },
-      { file: job.files[1], gid: 'gid-b' },
-    ];
-    job.progress = job.gids.map(({ file, gid }) => ({
-      gid,
-      name: file.name,
-      status: 'waiting',
-      totalLength: 0,
-      completedLength: 0,
-      downloadSpeed: 0,
-      connections: 0,
-      errorCode: null,
-      errorMessage: null,
-    }));
+    const rows = [row('gid-a', 'a.bin', 'active'), row('gid-b', 'b.bin', 'error')];
+    rows[1].errorCode = '22';
+    rows[1].errorMessage = 'The response status is not successful. status=403';
+    setRows(rows);
+    job.run = {
+      engine: 'aria2',
+      runs: [
+        { file: job.files[0], runId: 'gid-a' },
+        { file: job.files[1], runId: 'gid-b' },
+      ],
+      config: { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' },
+    };
     job.aria2Config = { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' };
     job.settled = false;
     job.startPolling();
     await new Promise((resolve) => setTimeout(resolve, 1300));
     assert.strictEqual(job.state.phase, 'downloading', '还有一个在下载，任务就不该判失败');
 
-    statuses['gid-a'] = 'complete';
+    rows[0].status = 'complete';
     await new Promise((resolve) => setTimeout(resolve, 1300));
     assert.strictEqual(job.state.phase, 'failed');
     assert(
@@ -218,39 +255,21 @@ async function main() {
     );
     assert.strictEqual(job.state.progress.filter((p) => p.status === 'complete').length, 1);
     job.stopPolling();
-    aria2.findGid = realFindGid;
   }
 
   // 9. 60 秒没有字节增长就标停滞，字节一涨立刻清掉；不只是速度为零
   {
-    const aria2 = require('../src/main/aria2');
-    const realFindGid = aria2.findGid;
-    let completed = '100';
-    aria2.findGid = async (_config, gid) => ({
-      gid,
-      status: 'active',
-      totalLength: '1000',
-      completedLength: completed,
-      downloadSpeed: '0',
-      connections: '1',
-    });
-
-    const { job } = makeJob();
+    const { job, setRows } = makeJob();
     job.files = [{ name: 'slow.bin', url: 'https://example.com/slow', headers: {} }];
-    job.gids = [{ file: job.files[0], gid: 'gid-slow' }];
-    job.progress = [
-      {
-        gid: 'gid-slow',
-        name: 'slow.bin',
-        status: 'waiting',
-        totalLength: 0,
-        completedLength: 0,
-        downloadSpeed: 0,
-        connections: 0,
-        errorCode: null,
-        errorMessage: null,
-      },
-    ];
+    const rows = [row('gid-slow', 'slow.bin', 'active')];
+    rows[0].totalLength = 1000;
+    rows[0].completedLength = 100;
+    setRows(rows);
+    job.run = {
+      engine: 'aria2',
+      runs: [{ file: job.files[0], runId: 'gid-slow' }],
+      config: { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' },
+    };
     job.aria2Config = { domain: 'http://127.0.0.1', port: '1', path: '/jsonrpc', token: '', dir: '' };
     job.lastArrived = 100;
     job.lastArrivedAt = Date.now() - 61_000;
@@ -259,11 +278,10 @@ async function main() {
     assert.strictEqual(job.snapshot().stalled, true, '61 秒没有字节增长就该标停滞');
     assert.strictEqual(job.state.phase, 'downloading', '停滞只是提示，不改状态');
 
-    completed = '200';
+    rows[0].completedLength = 200;
     await new Promise((resolve) => setTimeout(resolve, 1200));
     assert.strictEqual(job.snapshot().stalled, undefined, '字节一涨就清掉停滞标记');
     job.stopPolling();
-    aria2.findGid = realFindGid;
   }
 
   // 10. 重试先拉一次上游脚本：「上游改版」正是旧脚本造成的，沿用旧脚本的
@@ -354,7 +372,65 @@ async function main() {
     assert.ok(repliedPayload, '应当给网页回复错误信息');
     assert.strictEqual(repliedPayload.ok, false, '回复 ok 应为 false');
   }
-}
+  // 14. 媒体遇到登录问题不算失败：停下来等用户，登录完再跑一次
+  {
+    let retried = 0;
+    const mediaTransfer = {
+      id: 'yt-dlp',
+      finished: true,
+      paused: false,
+      error: {
+        code: 'media-auth',
+        message: '这个地址需要登录才能下载。',
+        hint: '在窗口里登录一次，然后点「继续」。',
+      },
+      async start() {
+        return { engine: 'yt-dlp', runs: [], config: null };
+      },
+      async progress() {
+        return { rows: [], lost: false };
+      },
+      async pause() {},
+      async resume() {},
+      async retry() {
+        retried += 1;
+        this.finished = false;
+        this.error = null;
+        return { engine: 'yt-dlp', runs: [], config: null };
+      },
+      async cancel() {},
+    };
+    const { job } = makeJob({
+      link: { kind: 'media', raw: 'https://example.com/watch?v=1', url: 'https://example.com/watch?v=1' },
+      transfer: mediaTransfer,
+    });
+    // The window is not what this case is about.
+    job.openMediaWindow = async () => {};
+    job.run = { engine: 'yt-dlp', runs: [], config: null };
+    job.startPolling();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.strictEqual(job.state.phase, 'needs-human', '登录问题要停下来等用户，不判失败');
+    assert.strictEqual(job.state.reason, 'login');
+    assert.strictEqual(job.state.code, undefined, '这不是失败，不该有失败码');
+
+    const resumed = await job.resume();
+    assert.strictEqual(resumed, true, '登录完再点继续应该重新跑一次');
+    assert.strictEqual(retried, 1, '引擎要重新跑一次');
+    job.stopPolling();
+  }
+
+  // 15. 还没有任何进度行的任务不是「已暂停」
+  {
+    const { job, setRows } = makeJob();
+    setRows([]);
+    job.files = [{ name: 'a.bin', url: 'https://example.com/a', headers: {} }];
+    job.run = { engine: 'aria2', runs: [], config: {} };
+    job.settled = false;
+    job.startPolling();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.strictEqual(job.state.phase, 'downloading', '没有进度行时不该显示已暂停');
+    job.stopPolling();
+  }
 
 /**
  * A JobManager with no window and no aria2. Everything crossed is the real
@@ -363,6 +439,7 @@ async function main() {
  *
  * @param {{ userscript?: object, buildJob?: (options: any) => any }} [overrides]
  */
+}
 function makeManager(overrides = {}) {
   const manager = new JobManager({
     store: { getSettings: () => ({ aria2Mode: 'external', allowTransfer: false, aria2: {} }) },
@@ -413,6 +490,7 @@ function makeStubJob({ link, script }, created) {
     },
     load() {},
   };
+
 }
 
 main().then(
