@@ -455,6 +455,20 @@ async function run(state) {
           phase: 'done',
           files: [{ name: 'clip-title.mp4', url: 'https://example.com/clip.mp4', headers: {} }],
         },
+      },      {
+        // A share with several files, waiting for the user to say which ones to
+        // download. The links are already in hand at this point.
+        id: 'fixture-picking-files',
+        createdAt: now - 12200,
+        link: { raw: 'https://pan.quark.cn/s/qk_pick', provider: 'quark', shareId: 'qk_pick', passcode: null },
+        state: {
+          phase: 'picking',
+          files: [
+            { name: 'pick-first.mp4', url: 'https://example.com/pick-first.mp4', headers: {} },
+            { name: 'pick-second.mp4', url: 'https://example.com/pick-second.mp4', headers: {} },
+            { name: 'pick-subtitle.srt', url: 'https://example.com/pick-subtitle.srt', headers: {} },
+          ],
+        },
       },
       {
         // A direct file link. Same shape as the media fixture: a kind, no provider.
@@ -596,7 +610,14 @@ async function run(state) {
       await read(`JSON.stringify(Array.from(document.querySelectorAll('.taskrow')).map((r) => r.dataset.state))`)
     );
     assert(humanStates.length >= 3, `Phase filter should list every needs-human task, got ${humanStates.length}`);
-    assert(humanStates.every((state) => state === 'needs-human'), 'Phase filter must not mix phases');
+    assert(
+      humanStates.every((state) => ['needs-human', 'picking'].includes(state)),
+      'The 待处理 filter must not mix in other phases'
+    );
+    assert(
+      humanStates.includes('picking'),
+      'The 待处理 filter must include a job that waits for the user to pick files'
+    );
     assert.strictEqual(
       Number(await read(`document.querySelectorAll('[data-source].active, [data-source-kind].active').length`)),
       0,
@@ -646,6 +667,97 @@ async function run(state) {
     assert(longRowState.progressBars === 1, 'Multi-file download must show a single aggregate progress bar');
     assert(/^\d+%$/.test(longRowState.progressWidth), `Aggregate progress width must be a percent, got ${longRowState.progressWidth}`);
     report.assertionsPassed += 4;
+
+    // 12d. A share with several files waits for the user to say which ones to
+    // download. The row must say so, and the drawer must offer the choice.
+    const pickRow = JSON.parse(
+      await read(`JSON.stringify((() => {
+        const row = document.querySelector('.taskrow[data-job-id="fixture-picking-files"]');
+        if (!row) return null;
+        return {
+          phase: row.dataset.phase || '',
+          label: row.querySelector('.status')?.textContent.trim() || '',
+          actions: Array.from(row.querySelectorAll('.rowactions button')).map((b) => b.getAttribute('aria-label') || b.textContent.trim()),
+        };
+      })())`)
+    );
+    assert(pickRow, 'The picking fixture must have a row');
+    assert.strictEqual(pickRow.label, '待选文件', `A picking job must read 待选文件, reads "${pickRow.label}"`);
+    assert(
+      pickRow.actions.some((text) => text.includes('选文件')),
+      `A picking job must offer a 选文件 action, got ${JSON.stringify(pickRow.actions)}`
+    );
+    report.assertionsPassed += 3;
+
+    await read(`document.querySelector('.taskrow[data-job-id="fixture-picking-files"] .rowactions button')?.click()`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const picker = JSON.parse(
+      await read(`JSON.stringify((() => {
+        const drawer = document.getElementById('drawer');
+        if (!drawer || drawer.hidden) return null;
+        const boxes = Array.from(drawer.querySelectorAll('.pickcheck'));
+        return {
+          tab: Array.from(drawer.querySelectorAll('.tab')).find((t) => t.classList.contains('active'))?.textContent.trim() || '',
+          count: drawer.querySelector('.pickcount')?.textContent.trim() || '',
+          names: boxes.map((b) => b.getAttribute('aria-label') || ''),
+          checked: boxes.map((b) => b.checked),
+          start: drawer.querySelector('.pickstart-label')?.textContent.trim() || '',
+          buttons: Array.from(drawer.querySelectorAll('.pickbar button')).map((b) => b.textContent.trim()),
+        };
+      })())`)
+    );
+    assert(picker, 'The picking job must open a drawer with the file picker');
+    assert(picker.tab.startsWith('文件'), `The picker must open on the 文件 tab, got "${picker.tab}"`);
+    assert.strictEqual(picker.names.length, 3, `The picker must list all three files, got ${picker.names.length}`);
+    assert(picker.checked.every(Boolean), 'Every file starts checked, because that is what the app used to do');
+    assert.strictEqual(picker.count, '已选 3 / 3', `The picker must count the checked files, reads "${picker.count}"`);
+    assert(picker.start.includes('3'), `The start button must say how many files, reads "${picker.start}"`);
+    assert.deepStrictEqual(
+      picker.buttons,
+      ['全选', '全不选', '反选'],
+      `The picker must offer the three bulk actions, got ${JSON.stringify(picker.buttons)}`
+    );
+    report.assertionsPassed += 6;
+
+    // Unchecking one file must move the count and the button label in place.
+    const afterUncheck = JSON.parse(
+      await read(`JSON.stringify((() => {
+        const drawer = document.getElementById('drawer');
+        const box = drawer.querySelectorAll('.pickcheck')[1];
+        box.checked = false;
+        box.dispatchEvent(new Event('change'));
+        return {
+          count: drawer.querySelector('.pickcount')?.textContent.trim() || '',
+          start: drawer.querySelector('.pickstart-label')?.textContent.trim() || '',
+        };
+      })())`)
+    );
+    assert.strictEqual(afterUncheck.count, '已选 2 / 3', `Unchecking must move the count, reads "${afterUncheck.count}"`);
+    assert(afterUncheck.start.includes('2'), `The start button must follow the count, reads "${afterUncheck.start}"`);
+    report.assertionsPassed += 2;
+
+    const imgPathPicker = path.join(os.tmpdir(), 'linkswift-probe-file-picker.png');
+    fs.writeFileSync(imgPathPicker, (await shoot(win)).toPNG());
+    report.screenshots.push(imgPathPicker);
+
+    // 12e. Every download can pick its own destination folder.
+    const dirUi = JSON.parse(
+      await read(`JSON.stringify({
+        chip: Boolean(document.getElementById('quick-dir')),
+        chipLabel: document.getElementById('quick-dir-label')?.textContent.trim() || '',
+        chipTitle: document.getElementById('quick-dir')?.title || '',
+        dialogPick: Boolean(document.getElementById('new-dir-pick')),
+        dialogValue: document.getElementById('new-dir')?.value || '',
+      })`)
+    );
+    assert(dirUi.chip, 'The quick paste bar must carry a destination chip');
+    assert.strictEqual(dirUi.chipLabel, '默认下载目录', `The chip must start on the global directory, reads "${dirUi.chipLabel}"`);
+    assert(dirUi.chipTitle.length > 0, 'The chip must say where the files land');
+    assert(dirUi.dialogPick, 'The new task dialog must offer a destination picker');
+    report.assertionsPassed += 4;
+
+    await read(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // Detail drawer lists every file with its own row
     await read(`document.querySelector('.taskrow[data-job-id="fixture-long-multifile"]')?.click()`);

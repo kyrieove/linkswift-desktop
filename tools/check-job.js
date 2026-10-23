@@ -124,7 +124,7 @@ function waitForFlush(job, ms = 1600) {
 }
 
 async function main() {
-  // 1. 文件夹多文件：三个 addUri 只投递一次，三个文件都在
+  // 1. 文件夹多文件：三个 addUri 先让用户挑，挑完只投递一次
   {
     const { job, emitted, deliveries } = makeJob();
     job.handle(addUriObservation(1, 'a.bin'));
@@ -132,7 +132,15 @@ async function main() {
     job.handle(addUriObservation(3, 'c.bin'));
     assert.strictEqual(emitted[0], 'linked', '拿到第一个直链就该是「已拿到链接」');
     await waitForFlush(job);
-    assert.strictEqual(deliveries.length, 1, '三个文件应合并成一次投递，不是三次');
+    // 多个文件不再自己投出去。直链这时已经在手上，等用户挑完再动。
+    assert.strictEqual(deliveries.length, 0, '多个文件要先让用户挑，不能自己投出去');
+    assert.strictEqual(job.state.phase, 'picking', '多个文件的任务该停在「待选文件」');
+    assert.strictEqual(job.state.files.length, 3, '待选列表里要有三个文件');
+
+    const picked = await job.chooseFiles(job.state.files.map((file) => file.url));
+    assert.strictEqual(picked.ok, true, '挑完就该开始下载');
+    assert.strictEqual(picked.delivered, 3, '投出去的应该就是挑中的三个');
+    assert.strictEqual(deliveries.length, 1, '挑完三个文件只投递一次，不是三次');
     assert.strictEqual(deliveries[0].length, 3, '投递的文件应包含全部三个');
     assert.notStrictEqual(emitted[0], 'delivering', '先有「已拿到链接」，再去推下载器');
     assert.strictEqual(job.state.phase, 'downloading');

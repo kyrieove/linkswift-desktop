@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('linkswift', {
   pause: (jobId) => ipcRenderer.invoke(INVOKE.pause, jobId),
   resume: (jobId) => ipcRenderer.invoke(INVOKE.resume, jobId),
   retry: (jobId) => ipcRenderer.invoke(INVOKE.retry, jobId),
+  chooseFiles: (jobId, urls) => ipcRenderer.invoke(INVOKE.chooseFiles, jobId, urls),
   listJobs: () => ipcRenderer.invoke(INVOKE.listJobs),
   getSettings: () => ipcRenderer.invoke(INVOKE.getSettings),
   setSettings: (settings) => ipcRenderer.invoke(INVOKE.setSettings, settings),

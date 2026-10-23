@@ -143,6 +143,7 @@
     loading: ['解析中', 'refresh'],
     extracting: ['解析中', 'refresh'],
     'needs-human': ['需处理', 'shield'],
+    picking: ['待选文件', 'check'],
     linked: ['已拿到直链', 'link'],
     delivering: ['推送到下载器', 'refresh'],
     downloading: ['下载中', 'download'],
@@ -199,6 +200,10 @@
     query: '',
     sort: 'new', // 'new' | 'old' | 'name'
     selectedIds: new Set(),
+    /** Which files of a picking job the user checked. Keyed by job id. */
+    picked: new Map(),
+    /** Where the next download lands. Empty means the global setting. */
+    downloadDir: '',
     detailId: null,
     detailTab: 'overview', // 'overview' | 'files' | 'logs'
     archiveView: false, // footer toggle: show archived rows instead of the live list
@@ -234,6 +239,7 @@
     downloading: { label: '下载中', tone: 'downloading' },
     paused: { label: '已暂停', tone: 'idle' },
     'needs-human': { label: '需你操作一步', tone: 'human' },
+    picking: { label: '待选文件', tone: 'human' },
     failed: { label: '已失败', tone: 'failed' },
     done: { label: '已完成', tone: 'done' },
     partial: { label: '部分完成', tone: 'failed' },
@@ -488,6 +494,10 @@
     if (phase === 'extracting') return '正在驱动页面取直链…';
     if (phase === 'linked') return '直链已就绪';
     if (phase === 'delivering') return '正在推送到下载器…';
+    if (phase === 'picking') {
+      const count = Array.isArray(state.files) ? state.files.length : 0;
+      return `等你选要下载的文件（共 ${count} 个）`;
+    }
     if (phase === 'needs-human') {
       // The list itself has to say what to do, without opening the drawer.
       return `${humanInfo(j).action}：${humanInfo(j).text}`;
@@ -543,7 +553,7 @@
     if (filter === 'all') return true;
     if (filter === 'active') return ['downloading', 'extracting', 'linked', 'loading', 'delivering'].includes(phase);
     if (filter === 'paused') return phase === 'paused';
-    if (filter === 'human') return phase === 'needs-human';
+    if (filter === 'human') return ['needs-human', 'picking'].includes(phase);
     if (filter === 'done') return phase === 'done';
     if (filter === 'failed') return phase === 'failed';
     return false;
@@ -944,6 +954,12 @@
         if (j.link && j.link.kind !== 'netdisk') {
           actions.append(btn('继续 ' + name, 'play', (e) => { e.stopPropagation(); actJob(j.id, 'resume'); }));
         }
+      } else if (phase === 'picking') {
+        // The links are in hand; the only thing left is the user's decision.
+        actions.append(btn('选文件 ' + name, 'check', (e) => {
+          e.stopPropagation();
+          openDetails(j.id, 'files');
+        }));
       } else if (phase === 'done') {
         actions.append(btn('打开 ' + name + ' 所在目录', 'folder', async (e) => {
           e.stopPropagation();
@@ -1035,12 +1051,14 @@
     }
 
     // Attention banner
-    const humanJobs = allJobs.filter((j) => j.state && j.state.phase === 'needs-human');
+    const humanJobs = allJobs.filter((j) => j.state && ['needs-human', 'picking'].includes(j.state.phase));
+    const pickingCount = humanJobs.filter((j) => j.state.phase === 'picking').length;
     const attention = $('#attention');
     if (attention) {
       attention.hidden = !humanJobs.length;
       if ($('#attention-text')) {
-        $('#attention-text').textContent = `${humanJobs.length} 个任务待处理 · 登录、转存或手动取链，不影响其他下载。`;
+        const what = pickingCount ? '登录、转存、选文件或手动取链' : '登录、转存或手动取链';
+        $('#attention-text').textContent = `${humanJobs.length} 个任务待处理 · ${what}，不影响其他下载。`;
       }
     }
 
@@ -1084,9 +1102,62 @@
 
   /* ---------------------------------------------------------------- Drawer Details --- */
 
-  function openDetails(id) {
+    /**
+   * 这次下载放到哪里。
+   *
+   * 没选过就是全局设置里的那个目录。选过之后两个入口都显示同一个位置，
+   * 下一次提交也用同一个位置，所以「这次存哪儿」永远看得见。
+   *
+   * @returns {string}
+   */
+  function targetDir() {
+    return viewState.downloadDir;
+  }
+
+  /** The directory the global setting points at, for the "using the default" case. */
+  function globalDir() {
+    return (currentSettings.aria2 && currentSettings.aria2.dir) || '';
+  }
+
+  /** @param {string} dir */
+  function dirLabel(dir) {
+    if (!dir) return '默认下载目录';
+    const parts = String(dir).split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || dir;
+  }
+
+  /** Put the chosen destination where the user can see it and change it. */
+  function updateDirUi() {
+    const dir = targetDir();
+    const label = $('#quick-dir-label');
+    if (label) label.textContent = dirLabel(dir);
+    const chip = $('#quick-dir');
+    if (chip) {
+      chip.title = dir ? `这次的下载位置：${dir}` : `沿用全局下载目录${globalDir() ? '：' + globalDir() : ''}`;
+      chip.classList.toggle('picked', Boolean(dir));
+    }
+    const input = $('#new-dir');
+    if (input) input.value = dir || globalDir() || '默认下载目录';
+    const hint = $('#new-dir-hint');
+    if (hint) hint.textContent = dir ? '这一次存到这个文件夹' : '沿用全局下载目录';
+  }
+
+  /** Ask the user where this download should land, and remember the answer. */
+  async function pickTargetDir() {
+    try {
+      const picked = await api.chooseDirectory();
+      if (typeof picked !== 'string' || !picked) return;
+      viewState.downloadDir = picked;
+      updateDirUi();
+      notify('这次的下载位置：' + dirLabel(picked));
+    } catch (err) {
+      notify('选择目录失败：' + describeError(err));
+    }
+  }
+
+  function openDetails(id, tab) {
     viewState.detailId = id;
-    viewState.detailTab = 'overview';
+    viewState.detailTab = tab || 'overview';
     const drawer = $('#drawer');
     if (drawer) drawer.hidden = false;
     renderDetails();
@@ -1238,6 +1309,16 @@
         drawer.append(el('div', 'detailnote', humanInfo(j).text));
       }
 
+      if (phase === 'picking') {
+        const note = el('div', 'detailnote');
+        note.append(document.createTextNode('直链已经拿到了，等你选要下载的文件。选完才开始下载。'));
+        note.append(btn('去选文件', 'check', () => {
+          viewState.detailTab = 'files';
+          renderDetails();
+        }, 'button secondary small'));
+        drawer.append(note);
+      }
+
       if (phase === 'failed') {
         const note = el('div', 'detailnote');
         // Which step broke is the difference between "the page changed" and
@@ -1345,6 +1426,8 @@
     } else if (viewState.detailTab === 'files') {
       if (!files.length) {
         drawer.append(el('div', 'detailnote', '尚未获得文件列表，解析完成后会显示文件与直链。'));
+      } else if (phase === 'picking') {
+        renderFilePicker(j, files, drawer);
       } else {
         // Per-file progress is the only proof a file reached the disk; a done
         // job handed to the clipboard or the browser has none for any file.
@@ -1424,6 +1507,106 @@
       });
     }
     drawer.scrollTop = drawerScrollTop;
+  }
+
+  /**
+   * Which files of a picking job the user checked.
+   *
+   * Everything starts checked: that is what the app used to do, so the common
+   * case stays one click instead of a decision. A file that is no longer on
+   * offer must not stay selected.
+   *
+   * @param {string} jobId
+   * @param {any[]} files
+   * @returns {Set<string>}
+   */
+  function pickedUrls(jobId, files) {
+    if (!viewState.picked.has(jobId)) {
+      viewState.picked.set(jobId, new Set(files.map((file) => file.url)));
+    }
+    const set = viewState.picked.get(jobId);
+    const known = new Set(files.map((file) => file.url));
+    for (const url of [...set]) if (!known.has(url)) set.delete(url);
+    return set;
+  }
+
+  /**
+   * The file picker.
+   *
+   * It exists only while the job waits for the user. The direct links are
+   * already in hand, so nothing moves until they answer.
+   *
+   * @param {any} j
+   * @param {any[]} files
+   * @param {HTMLElement} drawer
+   */
+  function renderFilePicker(j, files, drawer) {
+    const picked = pickedUrls(j.id, files);
+
+    const count = el('span', 'pickcount');
+    const startLabel = el('span', 'pickstart-label');
+    const start = el('button', 'button primary');
+    start.type = 'button';
+    start.append(icon('download'), startLabel);
+
+    const refresh = () => {
+      count.textContent = `已选 ${picked.size} / ${files.length}`;
+      startLabel.textContent = picked.size ? `开始下载 ${picked.size} 个文件` : '先选至少一个文件';
+      start.disabled = picked.size === 0;
+    };
+
+    start.onclick = async () => {
+      const urls = [...picked];
+      if (!urls.length) return;
+      if (typeof api.chooseFiles !== 'function') {
+        notify('这个版本还不支持选文件');
+        return;
+      }
+      start.disabled = true;
+      try {
+        const res = await api.chooseFiles(j.id, urls);
+        if (res && res.ok) notify(res.message || '已开始下载');
+        else notify((res && res.message) || '选择没有生效');
+      } catch (err) {
+        notify('选择失败：' + describeError(err));
+      } finally {
+        refresh();
+      }
+    };
+
+    const bar = el('div', 'pickbar');
+    bar.append(
+      btn('全选', null, () => { for (const file of files) picked.add(file.url); refresh(); }, 'button quiet small'),
+      btn('全不选', null, () => { picked.clear(); refresh(); }, 'button quiet small'),
+      btn('反选', null, () => {
+        for (const file of files) {
+          if (picked.has(file.url)) picked.delete(file.url);
+          else picked.add(file.url);
+        }
+        refresh();
+      }, 'button quiet small'),
+      count
+    );
+    drawer.append(bar);
+
+    for (const file of files) {
+      const item = el('div', 'fileitem pickitem');
+      const check = el('input', 'pickcheck');
+      check.type = 'checkbox';
+      check.checked = picked.has(file.url);
+      check.setAttribute('aria-label', '选择 ' + (file.name || '未命名文件'));
+      check.onchange = () => {
+        if (check.checked) picked.add(file.url);
+        else picked.delete(file.url);
+        refresh();
+      };
+      item.append(check, el('div', 'fileitem-name', file.name || '未命名文件'));
+      drawer.append(item);
+    }
+
+    drawer.append(el('div', 'detailnote', '选中的文件会立刻开始下载，没选的不动。直链有时效，选完尽快开始。'));
+    drawer.append(start);
+    refresh();
   }
 
   function updateDetailsProgressInPlace(j) {
@@ -1736,6 +1919,7 @@
           $('#footer-directory').textContent = (s.aria2 && s.aria2.dir) || '下载目录';
         }
         syncSettingsUi();
+        updateDirUi();
       }
     } catch {
       // ignore
@@ -1830,7 +2014,9 @@
     const err = $('#create-error');
     if (err) err.hidden = true;
 
-    if ($('#new-dir')) $('#new-dir').value = (currentSettings.aria2 && currentSettings.aria2.dir) || '下载目录';
+    if ($('#new-dir')) $('#new-dir').value = targetDir() || (currentSettings.aria2 && currentSettings.aria2.dir) || '下载目录';
+    const dirHint = $('#new-dir-hint');
+    if (dirHint) dirHint.textContent = targetDir() ? '这一次存到这个文件夹' : '沿用全局下载目录';
     const label = $('#dialog-delivery-label');
     if (label) {
       const modeNames = { aria2: '直接下载 (内置 aria2)', clipboard: '复制直链', browser: '浏览器下载' };
@@ -1862,7 +2048,7 @@
     }
 
     try {
-      const result = await api.submit(text);
+      const result = await api.submit(text, { dir: targetDir() });
       // One paste can be several links; each one answers for itself so a bad
       // entry cannot block the others.
       const entries = (result && Array.isArray(result.jobs)) ? result.jobs : [];
@@ -2279,6 +2465,12 @@
     // Header buttons
     const newTaskBtn = $('#new-task');
     if (newTaskBtn) newTaskBtn.addEventListener('click', openCreate);
+
+    // Where the next download lands. Both entry points share one answer.
+    const quickDir = $('#quick-dir');
+    if (quickDir) quickDir.addEventListener('click', pickTargetDir);
+    const newDirPick = $('#new-dir-pick');
+    if (newDirPick) newDirPick.addEventListener('click', pickTargetDir);
 
     // Quick paste and submit
     const quickInput = $('#quick-input');

@@ -179,11 +179,14 @@ function buildAddUriOptions(file) {
 /**
  * @param {Aria2Config} config
  * @param {import('../shared/protocol').ExtractedFile} file
+ * @param {string} [dir]  This download's own folder. Empty falls back to the
+ *   global `config.dir`.
  * @returns {Promise<string>} the aria2 GID
  */
-async function addUri(config, file) {
+async function addUri(config, file, dir) {
   const options = buildAddUriOptions(file);
-  if (config.dir) options.dir = config.dir;
+  const target = dir || config.dir;
+  if (target) options.dir = target;
 
   return /** @type {string} */ (await call(config, 'aria2.addUri', [[file.url], options]));
 }

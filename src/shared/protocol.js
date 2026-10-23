@@ -122,6 +122,7 @@
  *   | { phase: 'needs-human', reason: HumanReason }
  *   | { phase: 'extracting' }
  *   | { phase: 'linked', files: ExtractedFile[] }
+ *   | { phase: 'picking', files: ExtractedFile[] }
  *   | { phase: 'delivering', files: ExtractedFile[] }
  *   | { phase: 'downloading', files: ExtractedFile[], progress: DownloadProgress[] }
  *   | { phase: 'paused', files: ExtractedFile[], progress: DownloadProgress[] }
@@ -132,6 +133,10 @@
  * `step`, `verb` and `selector` are the driver's own failure report, kept so the
  * UI can say which step of the page script broke instead of only "上游改版".
  * `hint` is the one Chinese sentence built from them.
+ *
+ * `picking` is where a share with more than one file waits for the user to say
+ * which of them to download. The links are already in hand at that point, so
+ * the page window can be closed; nothing moves until the user answers.
  */
 
 /**
@@ -158,6 +163,7 @@
  * @property {string} [scriptVersion]  Userscript version this job ran on
  * @property {'upstream' | 'cache' | 'bundled'} [scriptOrigin]  Where it came from
  * @property {number} [archivedAt]  User archived it; it left the main list
+ * @property {string} [dir]  Where this job's files land. Empty means the global setting.
  */
 
 /**
@@ -169,6 +175,7 @@ const INVOKE = {
   pause: 'linkswift:pause',
   resume: 'linkswift:resume',
   retry: 'linkswift:retry',
+  chooseFiles: 'linkswift:job:choose-files',
   listJobs: 'linkswift:jobs:list',
   getSettings: 'linkswift:settings:get',
   setSettings: 'linkswift:settings:set',

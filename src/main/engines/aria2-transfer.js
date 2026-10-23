@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+
 const aria2 = require('../aria2');
 
 /**
@@ -22,11 +24,26 @@ const aria2 = require('../aria2');
  * @property {import('../../shared/protocol').EngineId} engine
  * @property {Array<{ file: import('../../shared/protocol').ExtractedFile, runId: string }>} runs
  * @property {import('../../shared/protocol').Aria2Config | null} [config]
+ * @property {string} [dir]  The folder this run writes into. Retry reuses it.
  *
  * @typedef {object} TransferProgress
  * @property {import('../../shared/protocol').DownloadProgress[]} rows
  * @property {boolean} lost  引擎自己把这份下载弄丢了，需要重新投递
  */
+
+/**
+ * aria2 不会自己建目录，目录不在的话这一单直接就失败了。先建好。
+ *
+ * @param {string} dir
+ */
+function ensureDir(dir) {
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    throw new Error(`建不了下载目录 ${dir}：${error.message}`);
+  }
+}
 
 /**
  * @param {import('../../shared/protocol').ExtractedFile} file
@@ -71,18 +88,21 @@ class Aria2Transfer {
   }
 
   /**
-   * @param {{ files?: import('../../shared/protocol').ExtractedFile[] }} target
+   * @param {{ files?: import('../../shared/protocol').ExtractedFile[], dir?: string }} target
    * @returns {Promise<TransferRun>}
    */
   async start(target) {
     const files = target?.files || [];
     const config = this.config();
     if (!config) throw new Error('没有可用的 aria2 配置');
+    const dir = target?.dir || '';
+    // 目录建一次就够了，不是每个文件建一次。
+    ensureDir(dir);
     const runs = [];
     for (const file of files) {
-      runs.push({ file, runId: await aria2.addUri(config, file) });
+      runs.push({ file, runId: await aria2.addUri(config, file, dir) });
     }
-    return { engine: 'aria2', runs, config };
+    return { engine: 'aria2', runs, config, dir };
   }
 
   /**
@@ -141,7 +161,8 @@ class Aria2Transfer {
         runs.push(item);
         continue;
       }
-      runs.push({ file: item.file, runId: await aria2.addUri(run.config, item.file) });
+      // 重投要落回原来那个目录，不能跑到别处去。
+      runs.push({ file: item.file, runId: await aria2.addUri(run.config, item.file, run.dir) });
     }
     return { ...run, runs };
   }

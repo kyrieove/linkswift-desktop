@@ -37,6 +37,7 @@ const ACTIVE_PHASES = new Set([
   'extracting',
   'needs-human',
   'linked',
+  'picking',
   'delivering',
   'downloading',
   'paused',
@@ -768,6 +769,7 @@ class Job {
    *   config?: () => import('../shared/protocol').Aria2Config | null,
    *   settings?: () => import('../shared/protocol').Settings,
    *   downloadDir?: () => string,
+   *   dir?: string,
    *   partition?: string,
    *   script?: { source: string, version: string, origin: string } | null,
    *   session?: import('electron').Session,
@@ -786,6 +788,7 @@ class Job {
     config,
     settings,
     downloadDir,
+    dir,
     partition,
     script,
     session,
@@ -802,6 +805,8 @@ class Job {
     this.config = config ?? (() => null);
     this.settings = settings ?? (() => ({}));
     this.downloadDir = downloadDir ?? (() => '');
+    // 这个任务自己的下载目录。空字符串表示「用全局设置里的那个」。
+    this.dir = dir ?? '';
     this.partition = partition;
     this.session = session;
 
@@ -851,11 +856,26 @@ class Job {
 
   /** @returns {import('../shared/protocol').Job} */
   snapshot() {
-    const snapshot = { id: this.id, link: this.link, state: this.state, createdAt: this.createdAt };
+    const snapshot = {
+      id: this.id,
+      link: this.link,
+      state: this.state,
+      createdAt: this.createdAt,
+      dir: this.dir,
+    };
     if (this.stalled) snapshot.stalled = true;
     if (this.scriptVersion) snapshot.scriptVersion = this.scriptVersion;
     if (this.scriptOrigin) snapshot.scriptOrigin = this.scriptOrigin;
     return snapshot;
+  }
+
+  /**
+   * 这个任务的文件落在哪儿。有自己的目录就用自己的，没有就用全局设置。
+   *
+   * @returns {string}
+   */
+  targetDir() {
+    return this.dir?.trim() || this.downloadDir();
   }
 
   /** @param {import('../shared/protocol').JobPhase} state */
@@ -1518,7 +1538,7 @@ class Job {
     try {
       // 登录态只能靠 cookie 文件带过去，所以起进程之前先导一次。
       await this.exportMediaCookies();
-      const run = await this.transfer.start({ url: this.link.url, dir: this.downloadDir() });
+      const run = await this.transfer.start({ url: this.link.url, dir: this.targetDir() });
       this.run = run;
       this.setState({ phase: 'downloading', files: [], progress: [] });
       this.startPolling();
@@ -1604,14 +1624,57 @@ class Job {
     }, ms);
   }
 
+  /**
+   * 一个分享里有多个文件时，先让用户挑要哪几个。
+   *
+   * 直链这时已经在手上了，页面窗口没有用了，收掉它；等用户选完再投递。
+   * 只有一个文件时不用问，直接下。
+   */
   flush() {
     if (this.settled || this.delivering || !this.pendingFiles.length) return;
+    // 已经在等用户挑了，迟到的推送不能把流程重新拉起来。
+    if (this.state.phase === 'picking') return;
+    if (this.pendingFiles.length > 1) {
+      this.close();
+      this.setState({ phase: 'picking', files: this.pendingFiles.slice() });
+      return;
+    }
     const files = this.pendingFiles.slice();
     this.pendingFiles = [];
     this.delivering = true;
     this.deliverNow(files).finally(() => {
       this.delivering = false;
     });
+  }
+
+  /**
+   * 用户挑完了：只下他选的那几个。
+   *
+   * 只在 `picking` 的时候有效。挑完之后阶段就变了，所以再调一次会被拒绝。
+   *
+   * @param {string[]} urls  用户选中的直链，按用户给的顺序
+   * @returns {Promise<{ ok: boolean, delivered: number, message: string }>}
+   */
+  async chooseFiles(urls) {
+    if (this.state.phase !== 'picking') {
+      return { ok: false, delivered: 0, message: '这个任务现在不在选文件的状态' };
+    }
+    const wanted = Array.isArray(urls) ? urls.map(String) : [];
+    const picked = [];
+    const seen = new Set();
+    for (const url of wanted) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const file = this.pendingFiles.find((entry) => entry.url === url);
+      // 没在待选列表里的链接直接忽略。
+      if (file) picked.push(file);
+    }
+    if (!picked.length) {
+      return { ok: false, delivered: 0, message: '至少要选一个文件' };
+    }
+    this.pendingFiles = [];
+    await this.deliverNow(picked);
+    return { ok: true, delivered: picked.length, message: `已选择 ${picked.length} 个文件` };
   }
 
   /**
@@ -1679,7 +1742,7 @@ class Job {
       const run = await this.transfer.start({
         files: result.files,
         url: this.link.url,
-        dir: this.downloadDir(),
+        dir: this.targetDir(),
       });
       this.run = run;
       this.aria2Config = run.config ?? null;
@@ -2135,11 +2198,13 @@ class JobManager {
    * others back.
    *
    * @param {string} raw
-   * @param {{ script?: { source: string, version: string, origin: string } }} [options]
+   * @param {{ script?: { source: string, version: string, origin: string }, dir?: string }} [options]
    *   The exact page script to run on, for a retry that just refreshed it.
+   *   `dir` is the download folder for every job this call creates; empty means
+   *   the global setting.
    * @returns {{ ok: boolean, jobs: Array<{ raw: string, jobId?: string, duplicateOf?: string, error?: string }> }}
    */
-  submit(raw, { script } = {}) {
+  submit(raw, { script, dir } = {}) {
     const text = String(raw ?? '');
     const sources = parseSources(text);
     if (!sources.length) {
@@ -2162,7 +2227,7 @@ class JobManager {
         results.push({ raw: source.raw, duplicateOf: existing.id });
         continue;
       }
-      const job = this.buildJob({ link: source, script });
+      const job = this.buildJob({ link: source, script, dir });
       this.jobs.set(job.id, job);
       this.emit(job.snapshot());
 
@@ -2283,10 +2348,10 @@ class JobManager {
 
   /**
    * @param {{ id?: string, createdAt?: number, link: import('../shared/protocol').Source,
-   *   script?: { source: string, version: string, origin: string } }} options
+   *   script?: { source: string, version: string, origin: string }, dir?: string }} options
    * @returns {Job}
    */
-  buildJob({ id, createdAt, link, script }) {
+  buildJob({ id, createdAt, link, script, dir }) {
     const settings = this.store.getSettings();
     // The source says which engine it wants by default; the user can override
     // that per source in the settings.
@@ -2313,6 +2378,7 @@ class JobManager {
       config: () => this.aria2Config(),
       settings: () => this.store.getSettings(),
       downloadDir: () => this.downloadDir(),
+      dir: dir ?? '',
       partition: this.partition,
       session: session.fromPartition(this.partition),
     });
@@ -2357,6 +2423,8 @@ class JobManager {
       runs: job.run ? job.run.runs.map((item) => ({ file: item.file, runId: item.runId })) : [],
       engine: job.run?.engine || 'aria2',
       ...(job.scriptVersion ? { scriptVersion: job.scriptVersion } : {}),
+      // 这个任务自己的下载目录。没有就还是用全局设置那条。
+      ...(job.dir ? { dir: job.dir } : {}),
       state:
         job.state.phase === 'downloading' || job.state.phase === 'paused'
           ? { phase: 'downloading', files }
@@ -2397,7 +2465,12 @@ class JobManager {
 
       // A settled job comes back exactly as it was.
       if (saved.phase === 'done' || saved.phase === 'failed') {
-        const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+        const job = this.buildJob({
+          id: record.id,
+          createdAt: record.createdAt,
+          link,
+          dir: record.dir,
+        });
         job.files = files;
         job.settled = saved.phase === 'failed';
         job.state = saved;
@@ -2407,10 +2480,33 @@ class JobManager {
         continue;
       }
 
+      // 等用户挑文件的任务：直链还在，下载还没开始。重启之后继续等用户挑，
+      // 不要自己把下载又拉起来。
+      if (saved.phase === 'picking') {
+        const job = this.buildJob({
+          id: record.id,
+          createdAt: record.createdAt,
+          link,
+          dir: record.dir,
+        });
+        job.files = files;
+        job.pendingFiles = files.slice();
+        job.state = { phase: 'picking', files: files.slice() };
+        this.jobs.set(job.id, job);
+        restored += 1;
+        this.emit(job.snapshot());
+        continue;
+      }
+
       // yt-dlp cannot be reattached to a process that died with the app, but it
       // resumes from its own .part file, so run it again.
       if (link.kind === 'media') {
-        const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+        const job = this.buildJob({
+          id: record.id,
+          createdAt: record.createdAt,
+          link,
+          dir: record.dir,
+        });
         job.files = files;
         this.jobs.set(job.id, job);
         restored += 1;
@@ -2419,7 +2515,12 @@ class JobManager {
       }
 
       if (!files.length) continue;
-      const job = this.buildJob({ id: record.id, createdAt: record.createdAt, link });
+      const job = this.buildJob({
+        id: record.id,
+        createdAt: record.createdAt,
+        link,
+        dir: record.dir,
+      });
       job.files = files;
       // Old records kept aria2 GIDs under `gids`; new ones keep the engine's
       // own handles under `runs`.
@@ -2428,7 +2529,8 @@ class JobManager {
         : Array.isArray(record.gids)
           ? record.gids.map((entry) => ({ file: entry.file, runId: entry.gid }))
           : [];
-      job.run = { engine: record.engine || 'aria2', runs, config: this.aria2Config() };
+      // 重投要用回原来那个目录，不然文件会跑到全局目录里去。
+      job.run = { engine: record.engine || 'aria2', runs, config: this.aria2Config(), dir: job.targetDir() };
       this.jobs.set(job.id, job);
       restored += 1;
 
@@ -2463,6 +2565,23 @@ class JobManager {
       job.startPolling();
     }
     return restored;
+  }
+
+  /**
+   * 用户挑完了哪几个文件。
+   *
+   * @param {string} jobId
+   * @param {string[]} urls
+   * @returns {Promise<{ ok: boolean, delivered: number, message: string }>}
+   */
+  async chooseFiles(jobId, urls) {
+    const id = String(jobId);
+    const job = this.jobs.get(id);
+    if (job) return job.chooseFiles(urls);
+    // 内存里没有这个任务，但存档里有：它已经不在等用户挑了。
+    const known = this.tasks.all().some((entry) => entry.id === id);
+    if (!known) return { ok: false, delivered: 0, message: '找不到这个任务' };
+    return { ok: false, delivered: 0, message: '这个任务现在不在选文件的状态' };
   }
 
   /** @param {string} jobId */
@@ -2525,7 +2644,8 @@ class JobManager {
     this.jobs.delete(job.id);
 
     const script = await this.userscript.refresh();
-    const result = this.submit(raw, { script });
+    // 重试还是同一个下载，目录要跟原来那条一样。
+    const result = this.submit(raw, { script, dir: job.dir });
     const detail =
       script.origin === 'upstream'
         ? `已重新拉取脚本 v${script.version} 后重试。`

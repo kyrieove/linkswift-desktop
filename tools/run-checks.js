@@ -14,6 +14,7 @@ const SCRIPT_STEPS = [
   'check:media-settings',
   'check:media-cookies',
   'check:job',
+  'check:job-choices',
   'check:aria2',
   'check:ytdlp-args',
   'check:ytdlp-progress',

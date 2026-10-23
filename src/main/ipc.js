@@ -29,11 +29,18 @@ function registerIpc(bus, manager, options = {}) {
     });
   }
 
-  checkedHandle(INVOKE.submit, (_event, rawLink) => manager.submit(String(rawLink ?? '')));
+  checkedHandle(INVOKE.submit, (_event, rawLink, options) =>
+    manager.submit(String(rawLink ?? ''), {
+      dir: options && typeof options.dir === 'string' ? options.dir : '',
+    }),
+  );
   checkedHandle(INVOKE.cancel, (_event, jobId) => manager.cancel(String(jobId)));
   checkedHandle(INVOKE.pause, (_event, jobId) => manager.pause(String(jobId)));
   checkedHandle(INVOKE.resume, (_event, jobId) => manager.resume(String(jobId)));
   checkedHandle(INVOKE.retry, (_event, jobId) => manager.retry(String(jobId)));
+  checkedHandle(INVOKE.chooseFiles, (_event, jobId, urls) =>
+    manager.chooseFiles(String(jobId), Array.isArray(urls) ? urls.map(String) : []),
+  );
   checkedHandle(INVOKE.listJobs, () => manager.list());
   checkedHandle(INVOKE.getSettings, () => manager.store.getSettings());
   checkedHandle(INVOKE.setSettings, async (_event, settings) => {
@@ -87,9 +94,12 @@ function registerIpc(bus, manager, options = {}) {
 
   checkedHandle(INVOKE.openDownloadDir, async (_event, jobId) => {
     const settings = manager.store.getSettings();
-    const dir = settings.aria2.dir?.trim() || manager.daemon.defaultDir();
+    const globalDir = settings.aria2.dir?.trim() || manager.daemon.defaultDir();
+    let dir = globalDir;
     if (jobId) {
       const job = manager.jobs.get(String(jobId)) || manager.tasks.all().find((t) => t.id === String(jobId));
+      // 这个任务自己有目录就指到那里去，别把文件指到全局目录里。
+      if (job?.dir?.trim()) dir = job.dir.trim();
       const files = job?.state?.files ?? job?.files;
       if (Array.isArray(files) && files.length > 0 && files[0]?.name) {
         const filePath = path.join(dir, files[0].name);

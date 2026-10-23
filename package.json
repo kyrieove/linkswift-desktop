@@ -22,6 +22,7 @@
     "check:media-settings": "node tools/check-media-settings.js",
     "check:media-cookies": "node tools/check-media-cookies.js",
     "check:job": "node tools/check-job.js",
+    "check:job-choices": "node tools/check-job-choices.js",
     "check:ytdlp-args": "node tools/check-ytdlp-args.js",
     "check:ytdlp-progress": "node tools/check-ytdlp-progress.js",
     "check:ytdlp-errors": "node tools/check-ytdlp-errors.js",
